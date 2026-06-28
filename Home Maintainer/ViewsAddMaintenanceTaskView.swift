@@ -15,12 +15,12 @@ struct AddMaintenanceTaskView: View {
     
     @State private var name = ""
     @State private var description = ""
-    @State private var selectedFrequency: TaskFrequency = .monthly
+    @State private var selectedFrequency: TaskFrequency = .once
     @State private var selectedAppliance: Appliance?
     @State private var customDays = 30
     
     let predefinedFrequencies: [TaskFrequency] = [
-        .daily, .weekly, .biweekly, .monthly, .quarterly, .biannually, .annually
+        .once, .daily, .weekly, .biweekly, .monthly, .quarterly, .biannually, .annually
     ]
     
     var body: some View {

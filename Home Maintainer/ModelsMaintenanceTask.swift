@@ -37,11 +37,22 @@ final class MaintenanceTask {
         self.lastCompleted = date
         self.nextDue = calculateNextDue(from: date, frequency: frequency)
     }
+
+    /// Updates the frequency and recomputes the next due date based on the new
+    /// schedule (from the last completion if available, otherwise from now).
+    func updateFrequency(_ newFrequency: TaskFrequency) {
+        self.frequency = newFrequency
+        let base = lastCompleted ?? Date()
+        self.nextDue = calculateNextDue(from: base, frequency: newFrequency)
+    }
     
     private func calculateNextDue(from date: Date, frequency: TaskFrequency) -> Date? {
         let calendar = Calendar.current
         
         switch frequency {
+        case .once:
+            // A one-time task never repeats, so there is no next due date.
+            return nil
         case .daily:
             return calendar.date(byAdding: .day, value: 1, to: date)
         case .weekly:
@@ -79,6 +90,7 @@ final class MaintenanceTask {
 }
 
 enum TaskFrequency: Codable, Hashable, Equatable {
+    case once
     case daily
     case weekly
     case biweekly
@@ -90,6 +102,7 @@ enum TaskFrequency: Codable, Hashable, Equatable {
     
     var displayName: String {
         switch self {
+        case .once: return "Once"
         case .daily: return "Daily"
         case .weekly: return "Weekly"
         case .biweekly: return "Every 2 Weeks"

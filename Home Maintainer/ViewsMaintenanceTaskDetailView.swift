@@ -15,6 +15,7 @@ struct MaintenanceTaskDetailView: View {
     @State private var showingCompleteSheet = false
     @State private var showingReopenConfirmation = false
     @State private var showingAppliancePicker = false
+    @State private var showingEditTask = false
     @State private var editingRecord: MaintenanceRecord?
     
     // Check if task is completed and not yet due again
@@ -155,6 +156,16 @@ struct MaintenanceTaskDetailView: View {
         }
         .navigationTitle(task.name)
         .navigationBarTitleDisplayMode(.inline)
+        .toolbar {
+            ToolbarItem(placement: .primaryAction) {
+                Button("Edit") {
+                    showingEditTask = true
+                }
+            }
+        }
+        .sheet(isPresented: $showingEditTask) {
+            EditMaintenanceTaskView(task: task)
+        }
         .sheet(isPresented: $showingCompleteSheet) {
             CompleteTaskView(task: task)
         }
@@ -359,6 +370,96 @@ struct EditRecordNotesView: View {
                     isFocused = true
                 }
             }
+        }
+    }
+}
+
+struct EditMaintenanceTaskView: View {
+    @Environment(\.dismiss) private var dismiss
+    @Query(sort: \Appliance.name) private var appliances: [Appliance]
+    @Bindable var task: MaintenanceTask
+
+    @State private var name: String
+    @State private var description: String
+    @State private var selectedFrequency: TaskFrequency
+    @State private var selectedAppliance: Appliance?
+
+    let predefinedFrequencies: [TaskFrequency] = [
+        .once, .daily, .weekly, .biweekly, .monthly, .quarterly, .biannually, .annually
+    ]
+
+    init(task: MaintenanceTask) {
+        self.task = task
+        _name = State(initialValue: task.name)
+        _description = State(initialValue: task.taskDescription)
+        _selectedFrequency = State(initialValue: task.frequency)
+        _selectedAppliance = State(initialValue: task.appliance)
+    }
+
+    var body: some View {
+        NavigationStack {
+            Form {
+                Section("Task Information") {
+                    TextField("Name", text: $name)
+                    TextField("Description", text: $description, axis: .vertical)
+                        .lineLimit(3...6)
+                }
+
+                Section("Frequency") {
+                    Picker("Repeat", selection: $selectedFrequency) {
+                        ForEach(predefinedFrequencies, id: \.displayName) { frequency in
+                            Text(frequency.displayName).tag(frequency)
+                        }
+                    }
+                }
+
+                Section("Link to Appliance") {
+                    Picker("Appliance", selection: $selectedAppliance) {
+                        Text("None").tag(nil as Appliance?)
+                        ForEach(appliances) { appliance in
+                            HStack {
+                                Image(systemName: appliance.type.systemImage)
+                                Text(appliance.name)
+                            }
+                            .tag(appliance as Appliance?)
+                        }
+                    }
+                    .disabled(appliances.isEmpty)
+
+                    if appliances.isEmpty {
+                        Text("No appliances added yet")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                }
+            }
+            .navigationTitle("Edit Task")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("Cancel") {
+                        dismiss()
+                    }
+                }
+
+                ToolbarItem(placement: .confirmationAction) {
+                    Button("Save") {
+                        saveChanges()
+                        dismiss()
+                    }
+                    .disabled(name.isEmpty)
+                }
+            }
+        }
+    }
+
+    private func saveChanges() {
+        task.name = name
+        task.taskDescription = description
+        task.appliance = selectedAppliance
+
+        if task.frequency != selectedFrequency {
+            task.updateFrequency(selectedFrequency)
         }
     }
 }
