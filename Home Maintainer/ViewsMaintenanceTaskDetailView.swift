@@ -35,6 +35,9 @@ struct MaintenanceTaskDetailView: View {
             Section("Details") {
                 LabeledContent("Name", value: task.name)
                 LabeledContent("Description", value: task.taskDescription)
+                if !task.room.isEmpty {
+                    LabeledContent("Room", value: task.room)
+                }
                 LabeledContent("Frequency", value: task.frequency.displayName)
                 
                 // Appliance link - editable
@@ -392,6 +395,7 @@ struct EditMaintenanceTaskView: View {
 
     @State private var name: String
     @State private var description: String
+    @State private var room: String
     @State private var selectedFrequency: TaskFrequency
     @State private var selectedAppliance: Appliance?
 
@@ -403,6 +407,7 @@ struct EditMaintenanceTaskView: View {
         self.task = task
         _name = State(initialValue: task.name)
         _description = State(initialValue: task.taskDescription)
+        _room = State(initialValue: task.room)
         _selectedFrequency = State(initialValue: task.frequency)
         _selectedAppliance = State(initialValue: task.appliance)
     }
@@ -415,6 +420,8 @@ struct EditMaintenanceTaskView: View {
                     TextField("Description", text: $description, axis: .vertical)
                         .lineLimit(3...6)
                 }
+
+                RoomFieldSection(room: $room)
 
                 Section("Frequency") {
                     Picker("Repeat", selection: $selectedFrequency) {
@@ -467,6 +474,7 @@ struct EditMaintenanceTaskView: View {
     private func saveChanges() {
         task.name = name
         task.taskDescription = description
+        task.room = room
         task.appliance = selectedAppliance
 
         if task.frequency != selectedFrequency {

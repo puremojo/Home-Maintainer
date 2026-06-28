@@ -19,6 +19,7 @@ struct AddMaintenanceTaskView: View {
     @State private var selectedAppliance: Appliance?
     @State private var customDays = 30
     @State private var productDrafts: [ProductDraft] = []
+    @State private var room = ""
     
     let predefinedFrequencies: [TaskFrequency] = [
         .once, .daily, .weekly, .biweekly, .monthly, .quarterly, .biannually, .annually
@@ -33,6 +34,8 @@ struct AddMaintenanceTaskView: View {
                         .lineLimit(3...6)
                 }
                 
+                RoomFieldSection(room: $room)
+
                 Section("Frequency") {
                     Picker("Repeat", selection: $selectedFrequency) {
                         ForEach(predefinedFrequencies, id: \.displayName) { frequency in
@@ -87,7 +90,8 @@ struct AddMaintenanceTaskView: View {
             name: name,
             description: description,
             frequency: selectedFrequency,
-            appliance: selectedAppliance
+            appliance: selectedAppliance,
+            room: room
         )
         modelContext.insert(task)
 

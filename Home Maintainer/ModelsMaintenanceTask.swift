@@ -13,6 +13,7 @@ final class MaintenanceTask {
     var id: UUID
     var name: String
     var taskDescription: String
+    var room: String = ""
     var frequency: TaskFrequency
     var lastCompleted: Date?
     var nextDue: Date?
@@ -23,10 +24,11 @@ final class MaintenanceTask {
     var products: [ProductLink]?
     var createdAt: Date
     
-    init(name: String, description: String, frequency: TaskFrequency, appliance: Appliance? = nil) {
+    init(name: String, description: String, frequency: TaskFrequency, appliance: Appliance? = nil, room: String = "") {
         self.id = UUID()
         self.name = name
         self.taskDescription = description
+        self.room = room
         self.frequency = frequency
         self.appliance = appliance
         self.isActive = true
