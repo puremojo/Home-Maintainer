@@ -18,6 +18,7 @@ struct AddRepairProjectView: View {
     @State private var status: ProjectStatus = .planning
     @State private var priority: ProjectPriority = .medium
     @State private var notes = ""
+    @State private var productDrafts: [ProductDraft] = []
     
     var body: some View {
         NavigationStack {
@@ -59,6 +60,8 @@ struct AddRepairProjectView: View {
                     TextField("Notes", text: $notes, axis: .vertical)
                         .lineLimit(3...6)
                 }
+
+                DraftProductsSection(drafts: $productDrafts)
             }
             .navigationTitle("New Project")
             .navigationBarTitleDisplayMode(.inline)
@@ -90,6 +93,13 @@ struct AddRepairProjectView: View {
         project.notes = notes
         
         modelContext.insert(project)
+
+        for draft in productDrafts where !draft.isEmpty {
+            let product = ProductLink(name: draft.name, urlString: draft.urlString)
+            product.project = project
+            modelContext.insert(product)
+        }
+
         dismiss()
     }
 }

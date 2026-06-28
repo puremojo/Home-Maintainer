@@ -19,6 +19,8 @@ final class RepairProject {
     var priority: ProjectPriority
     var contacts: [ProjectContact]?
     var quotes: [Quote]?
+    @Relationship(deleteRule: .cascade, inverse: \ProductLink.project)
+    var products: [ProductLink]?
     var invoice: Invoice?
     var hiredProvider: ServiceProvider?
     var startDate: Date?

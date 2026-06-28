@@ -149,6 +149,12 @@ struct MaintenanceTaskDetailView: View {
                 }
             }
             
+            LiveProductsSection(
+                products: task.products ?? [],
+                attach: { $0.task = task },
+                detach: { $0.task = nil }
+            )
+
             Section {
                 Toggle("Active", isOn: $task.isActive)
             }

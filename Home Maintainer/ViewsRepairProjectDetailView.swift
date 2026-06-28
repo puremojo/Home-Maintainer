@@ -133,6 +133,12 @@ struct RepairProjectDetailView: View {
                 }
             }
             
+            LiveProductsSection(
+                products: project.products ?? [],
+                attach: { $0.project = project },
+                detach: { $0.project = nil }
+            )
+
             if !project.notes.isEmpty {
                 Section("Notes") {
                     Text(project.notes)
