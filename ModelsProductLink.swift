@@ -15,16 +15,18 @@ final class ProductLink {
     var id: UUID
     var name: String
     var urlString: String
+    @Attribute(.externalStorage) var imageData: Data?
     var createdAt: Date
 
     // Back-references. A product link belongs to either a task or a project.
     var task: MaintenanceTask?
     var project: RepairProject?
 
-    init(name: String = "", urlString: String = "") {
+    init(name: String = "", urlString: String = "", imageData: Data? = nil) {
         self.id = UUID()
         self.name = name
         self.urlString = urlString
+        self.imageData = imageData
         self.createdAt = Date()
     }
 

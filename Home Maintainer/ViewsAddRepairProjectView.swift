@@ -95,7 +95,7 @@ struct AddRepairProjectView: View {
         modelContext.insert(project)
 
         for draft in productDrafts where !draft.isEmpty {
-            let product = ProductLink(name: draft.name, urlString: draft.urlString)
+            let product = ProductLink(name: draft.name, urlString: draft.urlString, imageData: draft.imageData)
             product.project = project
             modelContext.insert(product)
         }
