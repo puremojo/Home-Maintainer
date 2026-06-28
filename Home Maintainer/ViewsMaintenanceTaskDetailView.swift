@@ -17,6 +17,7 @@ struct MaintenanceTaskDetailView: View {
     @State private var showingAppliancePicker = false
     @State private var showingEditTask = false
     @State private var editingRecord: MaintenanceRecord?
+    @State private var productEditorTarget: ProductEditorTarget?
     
     // Check if task is completed and not yet due again
     var isCompletedForCurrentCycle: Bool {
@@ -150,6 +151,13 @@ struct MaintenanceTaskDetailView: View {
                 }
             }
             
+            LiveProductsSection(
+                products: task.products ?? [],
+                detach: { $0.task = nil },
+                onAdd: { productEditorTarget = .add },
+                onEdit: { productEditorTarget = .edit($0) }
+            )
+
             Section {
                 Toggle("Active", isOn: $task.isActive)
             }
@@ -174,6 +182,9 @@ struct MaintenanceTaskDetailView: View {
         }
         .sheet(item: $editingRecord) { record in
             EditRecordNotesView(record: record)
+        }
+        .sheet(item: $productEditorTarget) { target in
+            ProductEditorSheet(target: target, attach: { $0.task = task })
         }
         .confirmationDialog(
             "Reopen this task?",

@@ -18,6 +18,7 @@ struct AddMaintenanceTaskView: View {
     @State private var selectedFrequency: TaskFrequency = .once
     @State private var selectedAppliance: Appliance?
     @State private var customDays = 30
+    @State private var productDrafts: [ProductDraft] = []
     
     let predefinedFrequencies: [TaskFrequency] = [
         .once, .daily, .weekly, .biweekly, .monthly, .quarterly, .biannually, .annually
@@ -59,6 +60,8 @@ struct AddMaintenanceTaskView: View {
                             .foregroundStyle(.secondary)
                     }
                 }
+
+                DraftProductsSection(drafts: $productDrafts)
             }
             .navigationTitle("New Task")
             .navigationBarTitleDisplayMode(.inline)
@@ -87,6 +90,13 @@ struct AddMaintenanceTaskView: View {
             appliance: selectedAppliance
         )
         modelContext.insert(task)
+
+        for draft in productDrafts where !draft.isEmpty {
+            let product = ProductLink(name: draft.name, urlString: draft.urlString, imageData: draft.imageData)
+            product.task = task
+            modelContext.insert(product)
+        }
+
         dismiss()
     }
 }

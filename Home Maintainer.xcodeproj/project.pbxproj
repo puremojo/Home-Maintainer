@@ -6,6 +6,11 @@
 	objectVersion = 77;
 	objects = {
 
+/* Begin PBXBuildFile section */
+		4C952FEB2FF0BA9D00799AE8 /* ModelsProductLink.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4C952FEA2FF0BA9D00799AE8 /* ModelsProductLink.swift */; };
+		4C952FED2FF0BAE700799AE8 /* ViewsProductLinks.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4C952FEC2FF0BAE700799AE8 /* ViewsProductLinks.swift */; };
+/* End PBXBuildFile section */
+
 /* Begin PBXContainerItemProxy section */
 		68702FED2CE2F75A00E2BF03 /* PBXContainerItemProxy */ = {
 			isa = PBXContainerItemProxy;
@@ -24,6 +29,8 @@
 /* End PBXContainerItemProxy section */
 
 /* Begin PBXFileReference section */
+		4C952FEA2FF0BA9D00799AE8 /* ModelsProductLink.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ModelsProductLink.swift; sourceTree = "<group>"; };
+		4C952FEC2FF0BAE700799AE8 /* ViewsProductLinks.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ViewsProductLinks.swift; sourceTree = "<group>"; };
 		68702FDC2CE2F75900E2BF03 /* Home Maintainer.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = "Home Maintainer.app"; sourceTree = BUILT_PRODUCTS_DIR; };
 		68702FEC2CE2F75A00E2BF03 /* Home MaintainerTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = "Home MaintainerTests.xctest"; sourceTree = BUILT_PRODUCTS_DIR; };
 		68702FF62CE2F75A00E2BF03 /* Home MaintainerUITests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = "Home MaintainerUITests.xctest"; sourceTree = BUILT_PRODUCTS_DIR; };
@@ -79,6 +86,8 @@
 				68702FEF2CE2F75A00E2BF03 /* Home MaintainerTests */,
 				68702FF92CE2F75A00E2BF03 /* Home MaintainerUITests */,
 				68702FDD2CE2F75900E2BF03 /* Products */,
+				4C952FEA2FF0BA9D00799AE8 /* ModelsProductLink.swift */,
+				4C952FEC2FF0BAE700799AE8 /* ViewsProductLinks.swift */,
 			);
 			sourceTree = "<group>";
 		};
@@ -236,6 +245,8 @@
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				4C952FEB2FF0BA9D00799AE8 /* ModelsProductLink.swift in Sources */,
+				4C952FED2FF0BAE700799AE8 /* ViewsProductLinks.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};

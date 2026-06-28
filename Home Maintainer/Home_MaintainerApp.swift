@@ -21,6 +21,7 @@ struct Home_MaintainerApp: App {
             Appliance.self,
             ServiceProvider.self,
             RepairProject.self,
+            ProductLink.self,
             ProjectContact.self,
             Quote.self,
             Invoice.self,
