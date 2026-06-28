@@ -17,6 +17,7 @@ struct RepairProjectDetailView: View {
     @State private var showingAddContact = false
     @State private var showingAddQuote = false
     @State private var showingAddInvoice = false
+    @State private var productEditorTarget: ProductEditorTarget?
     
     var body: some View {
         List {
@@ -135,8 +136,9 @@ struct RepairProjectDetailView: View {
             
             LiveProductsSection(
                 products: project.products ?? [],
-                attach: { $0.project = project },
-                detach: { $0.project = nil }
+                detach: { $0.project = nil },
+                onAdd: { productEditorTarget = .add },
+                onEdit: { productEditorTarget = .edit($0) }
             )
 
             if !project.notes.isEmpty {
@@ -165,6 +167,9 @@ struct RepairProjectDetailView: View {
         }
         .sheet(isPresented: $showingAddInvoice) {
             AddInvoiceView(project: project)
+        }
+        .sheet(item: $productEditorTarget) { target in
+            ProductEditorSheet(target: target, attach: { $0.project = project })
         }
     }
 }
