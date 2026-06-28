@@ -19,6 +19,8 @@ final class MaintenanceTask {
     var isActive: Bool
     var records: [MaintenanceRecord]?
     var appliance: Appliance?
+    @Relationship(deleteRule: .cascade, inverse: \ProductLink.task)
+    var products: [ProductLink]?
     var createdAt: Date
     
     init(name: String, description: String, frequency: TaskFrequency, appliance: Appliance? = nil) {
