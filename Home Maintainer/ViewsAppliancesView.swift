@@ -10,43 +10,70 @@ import SwiftData
 
 struct AppliancesView: View {
     @Environment(\.modelContext) private var modelContext
-    @Query(sort: \Appliance.name) private var appliances: [Appliance]
+    @Environment(HomeManager.self) private var homeManager
+    @Query(sort: \Appliance.name) private var allAppliances: [Appliance]
     @State private var showingAddAppliance = false
-    
+    @State private var showingHomePicker = false
+
+    private var appliances: [Appliance] {
+        guard let home = homeManager.currentHome else { return [] }
+        return allAppliances.filter { $0.home?.id == home.id }
+    }
+
     var body: some View {
         NavigationStack {
-            List {
-                ForEach(appliances) { appliance in
-                    NavigationLink(destination: ApplianceDetailView(appliance: appliance)) {
-                        ApplianceRow(appliance: appliance)
+            Group {
+                if homeManager.currentHome == nil {
+                    ContentUnavailableView {
+                        Label("No Home Selected", systemImage: "house")
+                    } description: {
+                        Text("Create or select a home to manage appliances.")
+                    } actions: {
+                        Button("Select Home") { showingHomePicker = true }
+                            .buttonStyle(.borderedProminent)
                     }
-                }
-                .onDelete(perform: deleteAppliances)
-                
-                if appliances.isEmpty {
-                    ContentUnavailableView(
-                        "No Appliances",
-                        systemImage: "refrigerator",
-                        description: Text("Add your appliances to track their maintenance")
-                    )
+                } else {
+                    List {
+                        ForEach(appliances) { appliance in
+                            NavigationLink(destination: ApplianceDetailView(appliance: appliance)) {
+                                ApplianceRow(appliance: appliance)
+                            }
+                        }
+                        .onDelete(perform: deleteAppliances)
+
+                        if appliances.isEmpty {
+                            ContentUnavailableView(
+                                "No Appliances",
+                                systemImage: "refrigerator",
+                                description: Text("Add your appliances to track their maintenance")
+                            )
+                        }
+                    }
                 }
             }
             .navigationTitle("Appliances")
             .toolbar {
+                ToolbarItem(placement: .topBarLeading) {
+                    HomePickerButton(showingPicker: $showingHomePicker)
+                }
                 ToolbarItem(placement: .primaryAction) {
                     Button {
                         showingAddAppliance = true
                     } label: {
                         Label("Add Appliance", systemImage: "plus")
                     }
+                    .disabled(homeManager.currentHome == nil)
                 }
             }
             .sheet(isPresented: $showingAddAppliance) {
-                AddApplianceView()
+                AddApplianceView(home: homeManager.currentHome)
+            }
+            .sheet(isPresented: $showingHomePicker) {
+                HomePickerView()
             }
         }
     }
-    
+
     private func deleteAppliances(offsets: IndexSet) {
         for index in offsets {
             modelContext.delete(appliances[index])

@@ -27,7 +27,8 @@ final class RepairProject {
     var completionDate: Date?
     var notes: String
     var createdAt: Date
-    
+    var home: Home?
+
     init(title: String, description: String, category: ServiceCategory, priority: ProjectPriority = .medium) {
         self.id = UUID()
         self.title = title

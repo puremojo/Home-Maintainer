@@ -10,18 +10,21 @@ import SwiftData
 
 struct HandymanView: View {
     @Environment(OpenAIService.self) private var aiService
+    @Environment(HomeManager.self) private var homeManager
     @Environment(\.modelContext) private var modelContext
-    @Query(sort: \ChatConversation.lastMessageAt, order: .reverse) private var conversations: [ChatConversation]
-    
+
     @State private var showingSettings = false
+    @State private var showingHomePicker = false
     @State private var selectedConversation: ChatConversation?
     @State private var newConversation: ChatConversation?
-    
+
     var body: some View {
         NavigationStack {
             if aiService.isConfigured {
                 ConversationListView(
+                    homeID: homeManager.currentHome?.id,
                     selectedConversation: $selectedConversation,
+                    showingHomePicker: $showingHomePicker,
                     onNewChat: createNewConversation
                 )
             } else {
@@ -31,19 +34,21 @@ struct HandymanView: View {
         .sheet(isPresented: $showingSettings) {
             APIKeySettingsView()
         }
+        .sheet(isPresented: $showingHomePicker) {
+            HomePickerView()
+        }
         .sheet(item: $selectedConversation) { conversation in
             ChatView(conversation: conversation)
         }
         .sheet(item: $newConversation) { conversation in
             ChatView(conversation: conversation)
-                .onDisappear {
-                    newConversation = nil
-                }
+                .onDisappear { newConversation = nil }
         }
     }
-    
+
     private func createNewConversation() {
         let conversation = ChatConversation()
+        conversation.home = homeManager.currentHome
         modelContext.insert(conversation)
         newConversation = conversation
     }
@@ -51,51 +56,72 @@ struct HandymanView: View {
 
 struct ConversationListView: View {
     @Environment(\.modelContext) private var modelContext
-    @Query(sort: \ChatConversation.lastMessageAt, order: .reverse) private var conversations: [ChatConversation]
+    @Query(sort: \ChatConversation.lastMessageAt, order: .reverse) private var allConversations: [ChatConversation]
+
+    let homeID: UUID?
     @Binding var selectedConversation: ChatConversation?
+    @Binding var showingHomePicker: Bool
     let onNewChat: () -> Void
     @State private var showingSettings = false
-    
+
+    private var conversations: [ChatConversation] {
+        guard let id = homeID else { return [] }
+        return allConversations.filter { $0.home?.id == id }
+    }
+
     var body: some View {
-        List {
-            if conversations.isEmpty {
-                ContentUnavailableView(
-                    "No Conversations",
-                    systemImage: "bubble.left.and.bubble.right",
-                    description: Text("Start a new chat to ask about your home maintenance")
-                )
+        Group {
+            if homeID == nil {
+                ContentUnavailableView {
+                    Label("No Home Selected", systemImage: "house")
+                } description: {
+                    Text("Create or select a home to use hAIndyman.")
+                } actions: {
+                    Button("Select Home") { showingHomePicker = true }
+                        .buttonStyle(.borderedProminent)
+                }
             } else {
-                ForEach(conversations) { conversation in
-                    Button {
-                        selectedConversation = conversation
-                    } label: {
-                        VStack(alignment: .leading, spacing: 4) {
-                            Text(conversation.title)
-                                .font(.headline)
-                                .lineLimit(1)
-                            
-                            HStack {
-                                Text(conversation.lastMessageAt, format: .dateTime.month().day().hour().minute())
-                                    .font(.caption)
-                                    .foregroundStyle(.secondary)
-                                
-                                Text("•")
-                                    .font(.caption)
-                                    .foregroundStyle(.secondary)
-                                
-                                Text("\(conversation.messages?.count ?? 0) messages")
-                                    .font(.caption)
-                                    .foregroundStyle(.secondary)
+                List {
+                    if conversations.isEmpty {
+                        ContentUnavailableView(
+                            "No Conversations",
+                            systemImage: "bubble.left.and.bubble.right",
+                            description: Text("Start a new chat to ask about your home maintenance")
+                        )
+                    } else {
+                        ForEach(conversations) { conversation in
+                            Button {
+                                selectedConversation = conversation
+                            } label: {
+                                VStack(alignment: .leading, spacing: 4) {
+                                    Text(conversation.title)
+                                        .font(.headline)
+                                        .lineLimit(1)
+                                    HStack {
+                                        Text(conversation.lastMessageAt, format: .dateTime.month().day().hour().minute())
+                                            .font(.caption)
+                                            .foregroundStyle(.secondary)
+                                        Text("•")
+                                            .font(.caption)
+                                            .foregroundStyle(.secondary)
+                                        Text("\(conversation.messages?.count ?? 0) messages")
+                                            .font(.caption)
+                                            .foregroundStyle(.secondary)
+                                    }
+                                }
+                                .padding(.vertical, 4)
                             }
                         }
-                        .padding(.vertical, 4)
+                        .onDelete(perform: deleteConversations)
                     }
                 }
-                .onDelete(perform: deleteConversations)
             }
         }
         .navigationTitle("hAIndyman")
         .toolbar {
+            ToolbarItem(placement: .topBarLeading) {
+                HomePickerButton(showingPicker: $showingHomePicker)
+            }
             ToolbarItem(placement: .topBarLeading) {
                 Button {
                     showingSettings = true
@@ -103,13 +129,13 @@ struct ConversationListView: View {
                     Image(systemName: "gearshape")
                 }
             }
-            
             ToolbarItem(placement: .primaryAction) {
                 Button {
                     onNewChat()
                 } label: {
                     Image(systemName: "square.and.pencil")
                 }
+                .disabled(homeID == nil)
             }
         }
         .sheet(isPresented: $showingSettings) {

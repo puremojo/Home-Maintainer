@@ -16,6 +16,7 @@ final class ChatConversation {
     var createdAt: Date
     var lastMessageAt: Date
     @Relationship(deleteRule: .cascade) var messages: [ChatMessageData]?
+    var home: Home?
     
     init(title: String = "New Chat") {
         self.id = UUID()

@@ -10,20 +10,22 @@ import SwiftData
 
 struct RepairProjectsView: View {
     @Environment(\.modelContext) private var modelContext
-    @Query private var allProjects: [RepairProject]
+    @Environment(HomeManager.self) private var homeManager
+    @Query private var allProjectsRaw: [RepairProject]
     @State private var showingAddProject = false
+    @State private var showingHomePicker = false
     @State private var selectedStatus: ProjectStatus?
-    
+
+    private var allProjects: [RepairProject] {
+        guard let home = homeManager.currentHome else { return [] }
+        return allProjectsRaw.filter { $0.home?.id == home.id }
+    }
+
     var projects: [RepairProject] {
-        // Sort by priority (high to low), then by status, then by creation date
-        allProjects.sorted { project1, project2 in
-            if project1.priority != project2.priority {
-                return project1.priority > project2.priority  // High priority first
-            }
-            if project1.status.rawValue != project2.status.rawValue {
-                return project1.status.rawValue < project2.status.rawValue
-            }
-            return project1.createdAt > project2.createdAt
+        allProjects.sorted { p1, p2 in
+            if p1.priority != p2.priority { return p1.priority > p2.priority }
+            if p1.status.rawValue != p2.status.rawValue { return p1.status.rawValue < p2.status.rawValue }
+            return p1.createdAt > p2.createdAt
         }
     }
     
@@ -44,44 +46,55 @@ struct RepairProjectsView: View {
     
     var body: some View {
         NavigationStack {
-            List {
-                if projects.isEmpty {
-                    ContentUnavailableView(
-                        "No Projects",
-                        systemImage: "hammer",
-                        description: Text("Track repair projects, quotes, and invoices")
-                    )
+            Group {
+                if homeManager.currentHome == nil {
+                    ContentUnavailableView {
+                        Label("No Home Selected", systemImage: "house")
+                    } description: {
+                        Text("Create or select a home to manage repair projects.")
+                    } actions: {
+                        Button("Select Home") { showingHomePicker = true }
+                            .buttonStyle(.borderedProminent)
+                    }
                 } else {
-                    if !activeProjects.isEmpty && selectedStatus == nil {
-                        Section("Active Projects") {
-                            ForEach(activeProjects) { project in
-                                NavigationLink(destination: RepairProjectDetailView(project: project)) {
-                                    ProjectRow(project: project)
+                    List {
+                        if projects.isEmpty {
+                            ContentUnavailableView(
+                                "No Projects",
+                                systemImage: "hammer",
+                                description: Text("Track repair projects, quotes, and invoices")
+                            )
+                        } else {
+                            if !activeProjects.isEmpty && selectedStatus == nil {
+                                Section("Active Projects") {
+                                    ForEach(activeProjects) { project in
+                                        NavigationLink(destination: RepairProjectDetailView(project: project)) {
+                                            ProjectRow(project: project)
+                                        }
+                                    }
+                                    .onDelete { offsets in
+                                        deleteProjects(at: offsets, from: activeProjects)
+                                    }
                                 }
                             }
-                            .onDelete { offsets in
-                                deleteProjects(at: offsets, from: activeProjects)
-                            }
-                        }
-                    }
-                    
-                    if !completedProjects.isEmpty && selectedStatus == nil {
-                        Section("Completed Projects") {
-                            ForEach(completedProjects) { project in
-                                NavigationLink(destination: RepairProjectDetailView(project: project)) {
-                                    ProjectRow(project: project)
+                            if !completedProjects.isEmpty && selectedStatus == nil {
+                                Section("Completed Projects") {
+                                    ForEach(completedProjects) { project in
+                                        NavigationLink(destination: RepairProjectDetailView(project: project)) {
+                                            ProjectRow(project: project)
+                                        }
+                                    }
+                                    .onDelete { offsets in
+                                        deleteProjects(at: offsets, from: completedProjects)
+                                    }
                                 }
                             }
-                            .onDelete { offsets in
-                                deleteProjects(at: offsets, from: completedProjects)
-                            }
-                        }
-                    }
-                    
-                    if selectedStatus != nil {
-                        ForEach(filteredProjects) { project in
-                            NavigationLink(destination: RepairProjectDetailView(project: project)) {
-                                ProjectRow(project: project)
+                            if selectedStatus != nil {
+                                ForEach(filteredProjects) { project in
+                                    NavigationLink(destination: RepairProjectDetailView(project: project)) {
+                                        ProjectRow(project: project)
+                                    }
+                                }
                             }
                         }
                     }
@@ -89,22 +102,13 @@ struct RepairProjectsView: View {
             }
             .navigationTitle("Repair Projects")
             .toolbar {
-                ToolbarItem(placement: .primaryAction) {
-                    Button {
-                        showingAddProject = true
-                    } label: {
-                        Label("Add Project", systemImage: "plus")
-                    }
+                ToolbarItem(placement: .topBarLeading) {
+                    HomePickerButton(showingPicker: $showingHomePicker)
                 }
-                
                 ToolbarItem(placement: .topBarLeading) {
                     Menu {
-                        Button("All Projects") {
-                            selectedStatus = nil
-                        }
-                        
+                        Button("All Projects") { selectedStatus = nil }
                         Divider()
-                        
                         ForEach(ProjectStatus.allCases, id: \.self) { status in
                             Button {
                                 selectedStatus = status
@@ -116,9 +120,20 @@ struct RepairProjectsView: View {
                         Label("Filter", systemImage: "line.3.horizontal.decrease.circle")
                     }
                 }
+                ToolbarItem(placement: .primaryAction) {
+                    Button {
+                        showingAddProject = true
+                    } label: {
+                        Label("Add Project", systemImage: "plus")
+                    }
+                    .disabled(homeManager.currentHome == nil)
+                }
             }
             .sheet(isPresented: $showingAddProject) {
-                AddRepairProjectView()
+                AddRepairProjectView(home: homeManager.currentHome)
+            }
+            .sheet(isPresented: $showingHomePicker) {
+                HomePickerView()
             }
         }
     }

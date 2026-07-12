@@ -22,6 +22,7 @@ final class Appliance {
     var documents: [ApplianceDocument]?
     @Relationship(deleteRule: .cascade, inverse: \AppliancePhoto.appliance)
     var photos: [AppliancePhoto]?
+    var home: Home?
 
     init(name: String, type: ApplianceType, manufacturer: String = "", modelNumber: String = "") {
         self.id = UUID()

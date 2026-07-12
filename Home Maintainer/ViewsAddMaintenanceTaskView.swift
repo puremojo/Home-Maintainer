@@ -12,7 +12,9 @@ struct AddMaintenanceTaskView: View {
     @Environment(\.modelContext) private var modelContext
     @Environment(\.dismiss) private var dismiss
     @Query(sort: \Appliance.name) private var appliances: [Appliance]
-    
+
+    let home: Home?
+
     @State private var name = ""
     @State private var description = ""
     @State private var selectedFrequency: TaskFrequency = .once
@@ -20,6 +22,10 @@ struct AddMaintenanceTaskView: View {
     @State private var customDays = 30
     @State private var productDrafts: [ProductDraft] = []
     @State private var room = ""
+
+    init(home: Home? = nil) {
+        self.home = home
+    }
     
     let predefinedFrequencies: [TaskFrequency] = [
         .once, .daily, .weekly, .biweekly, .monthly, .quarterly, .biannually, .annually
@@ -93,6 +99,7 @@ struct AddMaintenanceTaskView: View {
             appliance: selectedAppliance,
             room: room
         )
+        task.home = home
         modelContext.insert(task)
 
         for draft in productDrafts where !draft.isEmpty {

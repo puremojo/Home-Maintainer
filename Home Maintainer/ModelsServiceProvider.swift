@@ -21,6 +21,7 @@ final class ServiceProvider {
     var isFavorite: Bool
     var rating: Int // 0-5 stars
     var createdAt: Date
+    var home: Home?
     
     init(name: String, category: ServiceCategory, phoneNumber: String = "", email: String = "") {
         self.id = UUID()

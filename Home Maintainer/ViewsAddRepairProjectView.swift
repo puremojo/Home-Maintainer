@@ -11,7 +11,13 @@ import SwiftData
 struct AddRepairProjectView: View {
     @Environment(\.modelContext) private var modelContext
     @Environment(\.dismiss) private var dismiss
-    
+
+    let home: Home?
+
+    init(home: Home? = nil) {
+        self.home = home
+    }
+
     @State private var title = ""
     @State private var description = ""
     @State private var category: ServiceCategory = .generalContractor
@@ -91,7 +97,8 @@ struct AddRepairProjectView: View {
         )
         project.status = status
         project.notes = notes
-        
+        project.home = home
+
         modelContext.insert(project)
 
         for draft in productDrafts where !draft.isEmpty {

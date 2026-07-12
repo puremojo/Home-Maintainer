@@ -10,16 +10,22 @@ import SwiftData
 
 struct ServiceProvidersView: View {
     @Environment(\.modelContext) private var modelContext
+    @Environment(HomeManager.self) private var homeManager
     @Environment(LocationManager.self) private var locationManager
     @Environment(LocalBusinessSearchService.self) private var searchService
-    @Query(sort: \ServiceProvider.name) private var providers: [ServiceProvider]
+    @Query(sort: \ServiceProvider.name) private var allProviders: [ServiceProvider]
     @State private var showingAddProvider = false
+    @State private var showingHomePicker = false
     @State private var selectedCategory: ServiceCategory?
     @State private var suggestionCategory: ServiceCategory?
-    
-    // Categories to show suggestions for
+
     let suggestedCategories: [ServiceCategory] = [.plumber, .electrician, .roofer]
-    
+
+    private var providers: [ServiceProvider] {
+        guard let home = homeManager.currentHome else { return [] }
+        return allProviders.filter { $0.home?.id == home.id }
+    }
+
     var filteredProviders: [ServiceProvider] {
         if let category = selectedCategory {
             return providers.filter { $0.category == category }
@@ -45,62 +51,72 @@ struct ServiceProvidersView: View {
     
     var body: some View {
         NavigationStack {
-            List {
-                // Suggestions Section
-                if selectedCategory == nil && providers.isEmpty {
-                    Section {
-                        ContentUnavailableView(
-                            "No Service Providers",
-                            systemImage: "person.2",
-                            description: Text("Get started by finding local businesses or add your own")
-                        )
+            Group {
+                if homeManager.currentHome == nil {
+                    ContentUnavailableView {
+                        Label("No Home Selected", systemImage: "house")
+                    } description: {
+                        Text("Create or select a home to manage service providers.")
+                    } actions: {
+                        Button("Select Home") { showingHomePicker = true }
+                            .buttonStyle(.borderedProminent)
                     }
-                }
-                
-                if selectedCategory == nil {
-                    Section("Find Local Businesses") {
-                        ForEach(suggestedCategories, id: \.self) { category in
-                            Button {
-                                suggestionCategory = category
-                            } label: {
-                                HStack {
-                                    Image(systemName: category.systemImage)
-                                        .font(.title3)
-                                        .foregroundStyle(.blue)
-                                        .frame(width: 30)
-                                    
-                                    VStack(alignment: .leading, spacing: 2) {
-                                        Text(category.rawValue)
-                                            .font(.headline)
-                                            .foregroundStyle(.primary)
-                                        
-                                        Text("Find local \(category.rawValue.lowercased())s near you")
-                                            .font(.caption)
-                                            .foregroundStyle(.secondary)
+                } else {
+                    List {
+                        if selectedCategory == nil && providers.isEmpty {
+                            Section {
+                                ContentUnavailableView(
+                                    "No Service Providers",
+                                    systemImage: "person.2",
+                                    description: Text("Get started by finding local businesses or add your own")
+                                )
+                            }
+                        }
+
+                        if selectedCategory == nil {
+                            Section("Find Local Businesses") {
+                                ForEach(suggestedCategories, id: \.self) { category in
+                                    Button {
+                                        suggestionCategory = category
+                                    } label: {
+                                        HStack {
+                                            Image(systemName: category.systemImage)
+                                                .font(.title3)
+                                                .foregroundStyle(.blue)
+                                                .frame(width: 30)
+
+                                            VStack(alignment: .leading, spacing: 2) {
+                                                Text(category.rawValue)
+                                                    .font(.headline)
+                                                    .foregroundStyle(.primary)
+                                                Text("Find local \(category.rawValue.lowercased())s near you")
+                                                    .font(.caption)
+                                                    .foregroundStyle(.secondary)
+                                            }
+
+                                            Spacer()
+
+                                            Image(systemName: "chevron.right")
+                                                .font(.caption)
+                                                .foregroundStyle(.secondary)
+                                        }
                                     }
-                                    
-                                    Spacer()
-                                    
-                                    Image(systemName: "chevron.right")
-                                        .font(.caption)
-                                        .foregroundStyle(.secondary)
                                 }
                             }
                         }
-                    }
-                }
-                
-                // Existing Providers
-                if !providers.isEmpty {
-                    ForEach(Array(providersByCategory.keys.sorted(by: { $0.rawValue < $1.rawValue })), id: \.self) { category in
-                        Section(category.rawValue) {
-                            ForEach(providersByCategory[category] ?? []) { provider in
-                                NavigationLink(destination: ServiceProviderDetailView(provider: provider)) {
-                                    ServiceProviderRow(provider: provider)
+
+                        if !providers.isEmpty {
+                            ForEach(Array(providersByCategory.keys.sorted(by: { $0.rawValue < $1.rawValue })), id: \.self) { category in
+                                Section(category.rawValue) {
+                                    ForEach(providersByCategory[category] ?? []) { provider in
+                                        NavigationLink(destination: ServiceProviderDetailView(provider: provider)) {
+                                            ServiceProviderRow(provider: provider)
+                                        }
+                                    }
+                                    .onDelete { offsets in
+                                        deleteProviders(at: offsets, in: category)
+                                    }
                                 }
-                            }
-                            .onDelete { offsets in
-                                deleteProviders(at: offsets, in: category)
                             }
                         }
                     }
@@ -108,40 +124,39 @@ struct ServiceProvidersView: View {
             }
             .navigationTitle("Service Providers")
             .toolbar {
+                ToolbarItem(placement: .topBarLeading) {
+                    HomePickerButton(showingPicker: $showingHomePicker)
+                }
+                ToolbarItem(placement: .topBarLeading) {
+                    Menu {
+                        Button("All Categories") { selectedCategory = nil }
+                        Divider()
+                        ForEach(ServiceCategory.allCases, id: \.self) { category in
+                            Button(category.rawValue) { selectedCategory = category }
+                        }
+                    } label: {
+                        Label("Filter", systemImage: "line.3.horizontal.decrease.circle")
+                    }
+                }
                 ToolbarItem(placement: .primaryAction) {
                     Button {
                         showingAddProvider = true
                     } label: {
                         Label("Add Provider", systemImage: "plus")
                     }
-                }
-                
-                ToolbarItem(placement: .topBarLeading) {
-                    Menu {
-                        Button("All Categories") {
-                            selectedCategory = nil
-                        }
-                        
-                        Divider()
-                        
-                        ForEach(ServiceCategory.allCases, id: \.self) { category in
-                            Button(category.rawValue) {
-                                selectedCategory = category
-                            }
-                        }
-                    } label: {
-                        Label("Filter", systemImage: "line.3.horizontal.decrease.circle")
-                    }
+                    .disabled(homeManager.currentHome == nil)
                 }
             }
             .sheet(isPresented: $showingAddProvider) {
-                AddServiceProviderView()
+                AddServiceProviderView(home: homeManager.currentHome)
+            }
+            .sheet(isPresented: $showingHomePicker) {
+                HomePickerView()
             }
             .sheet(item: $suggestionCategory) { category in
                 ServiceProviderSuggestionsView(category: category)
             }
             .onAppear {
-                // Request location permission when view appears
                 if locationManager.authorizationStatus == .notDetermined {
                     locationManager.requestLocation()
                 }

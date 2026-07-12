@@ -13,9 +13,11 @@ struct Home_MaintainerApp: App {
     @State private var locationManager = LocationManager()
     @State private var businessSearchService = LocalBusinessSearchService()
     @State private var openAIService = OpenAIService()
-    
+    @State private var homeManager = HomeManager()
+
     var sharedModelContainer: ModelContainer = {
         let schema = Schema([
+            Home.self,
             MaintenanceTask.self,
             MaintenanceRecord.self,
             Appliance.self,
@@ -30,18 +32,23 @@ struct Home_MaintainerApp: App {
             ChatMessageData.self,
             ChatImageData.self
         ])
-        
-        // Enable CloudKit sync for multi-user access
+
         let modelConfiguration = ModelConfiguration(
             schema: schema,
             isStoredInMemoryOnly: false,
-            cloudKitDatabase: .automatic  // ✨ This enables iCloud sync!
+            cloudKitDatabase: .automatic
         )
 
         do {
             return try ModelContainer(for: schema, configurations: [modelConfiguration])
         } catch {
-            fatalError("Could not create ModelContainer: \(error)")
+            // CloudKit unavailable (e.g. simulator without iCloud) — fall back to local-only store.
+            let localConfig = ModelConfiguration(schema: schema, isStoredInMemoryOnly: false, cloudKitDatabase: .none)
+            do {
+                return try ModelContainer(for: schema, configurations: [localConfig])
+            } catch {
+                fatalError("Could not create ModelContainer: \(error)")
+            }
         }
     }()
 
@@ -51,6 +58,10 @@ struct Home_MaintainerApp: App {
                 .environment(locationManager)
                 .environment(businessSearchService)
                 .environment(openAIService)
+                .environment(homeManager)
+                .onOpenURL { url in
+                    homeManager.pendingImportURL = url
+                }
         }
         .modelContainer(sharedModelContainer)
     }

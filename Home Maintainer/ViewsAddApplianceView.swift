@@ -13,6 +13,12 @@ struct AddApplianceView: View {
     @Environment(\.modelContext) private var modelContext
     @Environment(\.dismiss) private var dismiss
 
+    let home: Home?
+
+    init(home: Home? = nil) {
+        self.home = home
+    }
+
     @State private var name = ""
     @State private var type: ApplianceType = .refrigerator
     @State private var manufacturer = ""
@@ -149,6 +155,7 @@ struct AddApplianceView: View {
         }
         
         appliance.notes = notes
+        appliance.home = home
 
         modelContext.insert(appliance)
 

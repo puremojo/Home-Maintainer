@@ -10,9 +10,16 @@ import SwiftData
 
 struct MaintenanceTasksView: View {
     @Environment(\.modelContext) private var modelContext
-    @Query(sort: \MaintenanceTask.nextDue) private var tasks: [MaintenanceTask]
+    @Environment(HomeManager.self) private var homeManager
+    @Query(sort: \MaintenanceTask.nextDue) private var allTasks: [MaintenanceTask]
     @State private var showingAddTask = false
+    @State private var showingHomePicker = false
     @AppStorage("taskSortOption") private var sortOption: TaskSortOption = .upNext
+
+    private var tasks: [MaintenanceTask] {
+        guard let home = homeManager.currentHome else { return [] }
+        return allTasks.filter { $0.home?.id == home.id }
+    }
 
     var activeTasks: [MaintenanceTask] {
         tasks.filter { $0.isActive }
@@ -52,26 +59,18 @@ struct MaintenanceTasksView: View {
 
     var body: some View {
         NavigationStack {
-            List {
-                switch sortOption {
-                case .upNext:
-                    upNextSections
-                case .room:
-                    roomSections
-                case .frequency:
-                    frequencySections
-                }
-
-                if activeTasks.isEmpty {
-                    ContentUnavailableView(
-                        "No Tasks",
-                        systemImage: "checklist",
-                        description: Text("Add your first maintenance task to get started")
-                    )
+            Group {
+                if homeManager.currentHome == nil {
+                    noHomeView
+                } else {
+                    taskList
                 }
             }
             .navigationTitle("Maintenance Tasks")
             .toolbar {
+                ToolbarItem(placement: .topBarLeading) {
+                    HomePickerButton(showingPicker: $showingHomePicker)
+                }
                 ToolbarItem(placement: .topBarLeading) {
                     Menu {
                         Picker("Sort By", selection: $sortOption) {
@@ -83,17 +82,52 @@ struct MaintenanceTasksView: View {
                         Label("Sort", systemImage: "arrow.up.arrow.down")
                     }
                 }
-
                 ToolbarItem(placement: .primaryAction) {
                     Button {
                         showingAddTask = true
                     } label: {
                         Label("Add Task", systemImage: "plus")
                     }
+                    .disabled(homeManager.currentHome == nil)
                 }
             }
             .sheet(isPresented: $showingAddTask) {
-                AddMaintenanceTaskView()
+                AddMaintenanceTaskView(home: homeManager.currentHome)
+            }
+            .sheet(isPresented: $showingHomePicker) {
+                HomePickerView()
+            }
+        }
+    }
+
+    private var noHomeView: some View {
+        ContentUnavailableView {
+            Label("No Home Selected", systemImage: "house")
+        } description: {
+            Text("Create or select a home to manage tasks.")
+        } actions: {
+            Button("Select Home") { showingHomePicker = true }
+                .buttonStyle(.borderedProminent)
+        }
+    }
+
+    private var taskList: some View {
+        List {
+            switch sortOption {
+            case .upNext:
+                upNextSections
+            case .room:
+                roomSections
+            case .frequency:
+                frequencySections
+            }
+
+            if activeTasks.isEmpty {
+                ContentUnavailableView(
+                    "No Tasks",
+                    systemImage: "checklist",
+                    description: Text("Add your first maintenance task to get started")
+                )
             }
         }
     }

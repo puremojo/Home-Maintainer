@@ -11,7 +11,13 @@ import SwiftData
 struct AddServiceProviderView: View {
     @Environment(\.modelContext) private var modelContext
     @Environment(\.dismiss) private var dismiss
-    
+
+    let home: Home?
+
+    init(home: Home? = nil) {
+        self.home = home
+    }
+
     @State private var name = ""
     @State private var category: ServiceCategory = .generalContractor
     @State private var phoneNumber = ""
@@ -111,7 +117,8 @@ struct AddServiceProviderView: View {
         provider.notes = notes
         provider.isFavorite = isFavorite
         provider.rating = rating
-        
+        provider.home = home
+
         modelContext.insert(provider)
         dismiss()
     }

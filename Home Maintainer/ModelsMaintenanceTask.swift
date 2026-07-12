@@ -23,6 +23,7 @@ final class MaintenanceTask {
     @Relationship(deleteRule: .cascade, inverse: \ProductLink.task)
     var products: [ProductLink]?
     var createdAt: Date
+    var home: Home?
     
     init(name: String, description: String, frequency: TaskFrequency, appliance: Appliance? = nil, room: String = "") {
         self.id = UUID()
