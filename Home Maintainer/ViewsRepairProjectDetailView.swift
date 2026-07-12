@@ -143,7 +143,7 @@ struct RepairProjectDetailView: View {
 
             if !project.notes.isEmpty {
                 Section("Notes") {
-                    Text(project.notes)
+                    LinkedText(text: project.notes)
                 }
             }
         }
@@ -208,7 +208,7 @@ struct ContactRowView: View {
             }
             
             if !contact.notes.isEmpty {
-                Text(contact.notes)
+                LinkedText(text: contact.notes)
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }

@@ -47,7 +47,7 @@ struct MaintenanceTaskDetailView: View {
                             showingAppliancePicker = true
                         } label: {
                             HStack {
-                                Image(systemName: appliance.type.systemImage)
+                                ApplianceIconView(appliance: appliance, size: 30)
                                 Text(appliance.name)
                                 Spacer()
                                 Image(systemName: "chevron.right")
@@ -139,7 +139,7 @@ struct MaintenanceTaskDetailView: View {
                                 }
                                 
                                 if !record.notes.isEmpty {
-                                    Text(record.notes)
+                                    LinkedText(text: record.notes)
                                         .font(.caption)
                                         .foregroundStyle(.secondary)
                                 } else {
@@ -303,9 +303,7 @@ struct SelectApplianceView: View {
                                 dismiss()
                             } label: {
                                 HStack {
-                                    Image(systemName: appliance.type.systemImage)
-                                        .foregroundStyle(.blue)
-                                        .frame(width: 30)
+                                    ApplianceIconView(appliance: appliance, size: 30)
                                     Text(appliance.name)
                                     Spacer()
                                     if task.appliance?.id == appliance.id {

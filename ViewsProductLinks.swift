@@ -9,6 +9,40 @@ import SwiftUI
 import SwiftData
 import PhotosUI
 
+// MARK: - Linkified text
+
+/// Renders free-form text, turning any detected URLs into tappable links.
+/// Used for notes fields where users may paste links that would otherwise
+/// appear as plain, non-interactive text.
+struct LinkedText: View {
+    let text: String
+
+    var body: some View {
+        Text(Self.linkified(text))
+    }
+
+    /// Builds an `AttributedString` with a `.link` attribute applied to every
+    /// URL found in the text. SwiftUI's `Text` renders these as tappable links.
+    static func linkified(_ text: String) -> AttributedString {
+        var attributed = AttributedString(text)
+
+        guard let detector = try? NSDataDetector(types: NSTextCheckingResult.CheckingType.link.rawValue) else {
+            return attributed
+        }
+
+        let fullRange = NSRange(text.startIndex..<text.endIndex, in: text)
+        detector.enumerateMatches(in: text, range: fullRange) { match, _, _ in
+            guard let match, let url = match.url,
+                  let stringRange = Range(match.range, in: text),
+                  let attrRange = Range(stringRange, in: attributed) else { return }
+            attributed[attrRange].link = url
+            attributed[attrRange].underlineStyle = .single
+        }
+
+        return attributed
+    }
+}
+
 // MARK: - Draft (used by the "Add" screens before the parent object exists)
 
 /// A lightweight, editable stand-in for a `ProductLink` used while composing a
@@ -173,12 +207,13 @@ struct FullScreenImageView: View {
     @State private var scale: CGFloat = 1.0
 
     var body: some View {
-        ZStack(alignment: .topTrailing) {
-            Color.black.ignoresSafeArea()
+        ZStack {
+            Color.black
 
             Image(uiImage: uiImage)
                 .resizable()
                 .scaledToFit()
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
                 .scaleEffect(scale)
                 .gesture(
                     MagnificationGesture()
@@ -189,7 +224,9 @@ struct FullScreenImageView: View {
                             withAnimation { scale = 1.0 }
                         }
                 )
-
+        }
+        .ignoresSafeArea()
+        .overlay(alignment: .topTrailing) {
             Button {
                 dismiss()
             } label: {

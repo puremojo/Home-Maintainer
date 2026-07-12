@@ -20,7 +20,9 @@ final class Appliance {
     var notes: String
     var createdAt: Date
     var documents: [ApplianceDocument]?
-    
+    @Relationship(deleteRule: .cascade, inverse: \AppliancePhoto.appliance)
+    var photos: [AppliancePhoto]?
+
     init(name: String, type: ApplianceType, manufacturer: String = "", modelNumber: String = "") {
         self.id = UUID()
         self.name = name
@@ -30,8 +32,9 @@ final class Appliance {
         self.notes = ""
         self.createdAt = Date()
         self.documents = []
+        self.photos = []
     }
-    
+
     func addDocument(name: String, data: Data, contentType: String) {
         let document = ApplianceDocument(name: name, data: data, contentType: contentType)
         if documents == nil {
@@ -39,9 +42,39 @@ final class Appliance {
         }
         documents?.append(document)
     }
-    
+
     func removeDocument(_ document: ApplianceDocument) {
         documents?.removeAll { $0.id == document.id }
+    }
+
+    func addPhoto(data: Data) {
+        let photo = AppliancePhoto(imageData: data)
+        if photos == nil {
+            photos = []
+        }
+        photos?.append(photo)
+    }
+
+    /// The image data for the appliance's primary picture (the earliest one
+    /// added), used in place of the type icon wherever the appliance is listed.
+    var primaryPhotoData: Data? {
+        photos?.sorted(by: { $0.createdAt < $1.createdAt }).first?.imageData
+    }
+}
+
+/// A picture attached to an appliance. Stored as its own model so images use
+/// SwiftData's external storage and can grow independently of the appliance row.
+@Model
+final class AppliancePhoto {
+    var id: UUID
+    @Attribute(.externalStorage) var imageData: Data?
+    var createdAt: Date
+    var appliance: Appliance?
+
+    init(imageData: Data? = nil) {
+        self.id = UUID()
+        self.imageData = imageData
+        self.createdAt = Date()
     }
 }
 

@@ -19,6 +19,7 @@ struct Home_MaintainerApp: App {
             MaintenanceTask.self,
             MaintenanceRecord.self,
             Appliance.self,
+            AppliancePhoto.self,
             ServiceProvider.self,
             RepairProject.self,
             ProductLink.self,

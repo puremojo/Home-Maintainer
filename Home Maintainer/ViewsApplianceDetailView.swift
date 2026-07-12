@@ -9,6 +9,7 @@ import SwiftUI
 import SwiftData
 import UniformTypeIdentifiers
 import PDFKit
+import PhotosUI
 
 struct ApplianceDetailView: View {
     @Environment(\.modelContext) private var modelContext
@@ -17,6 +18,8 @@ struct ApplianceDetailView: View {
     @State private var isEditing = false
     @State private var showingDocumentPicker = false
     @State private var selectedDocument: ApplianceDocument?
+    @State private var photoPickerItems: [PhotosPickerItem] = []
+    @State private var selectedPhoto: AppliancePhoto?
     
     // Get tasks linked to this appliance
     var linkedTasks: [MaintenanceTask] {
@@ -53,10 +56,48 @@ struct ApplianceDetailView: View {
             
             if !appliance.notes.isEmpty {
                 Section("Notes") {
-                    Text(appliance.notes)
+                    LinkedText(text: appliance.notes)
                 }
             }
             
+            Section {
+                if let photos = appliance.photos, !photos.isEmpty {
+                    ScrollView(.horizontal, showsIndicators: false) {
+                        HStack(spacing: 12) {
+                            ForEach(photos.sorted(by: { $0.createdAt < $1.createdAt })) { photo in
+                                if let data = photo.imageData, let uiImage = UIImage(data: data) {
+                                    Image(uiImage: uiImage)
+                                        .resizable()
+                                        .scaledToFill()
+                                        .frame(width: 100, height: 100)
+                                        .clipShape(RoundedRectangle(cornerRadius: 8))
+                                        .contentShape(RoundedRectangle(cornerRadius: 8))
+                                        .onTapGesture {
+                                            selectedPhoto = photo
+                                        }
+                                        .contextMenu {
+                                            Button(role: .destructive) {
+                                                deletePhoto(photo)
+                                            } label: {
+                                                Label("Delete", systemImage: "trash")
+                                            }
+                                        }
+                                }
+                            }
+                        }
+                        .padding(.vertical, 4)
+                    }
+                }
+
+                PhotosPicker(selection: $photoPickerItems, matching: .images) {
+                    Label("Add Pictures", systemImage: "photo.badge.plus")
+                }
+            } header: {
+                Text("Pictures")
+            } footer: {
+                Text("Add photos of the appliance, its label, or model/serial number. Tap a photo to view it full screen; long-press to delete.")
+            }
+
             Section {
                 ForEach(appliance.documents ?? []) { document in
                     Button {
@@ -174,6 +215,27 @@ struct ApplianceDetailView: View {
         .sheet(item: $selectedDocument) { document in
             DocumentViewer(document: document)
         }
+        .fullScreenCover(item: $selectedPhoto) { photo in
+            if let data = photo.imageData, let uiImage = UIImage(data: data) {
+                FullScreenImageView(uiImage: uiImage)
+            }
+        }
+        .onChange(of: photoPickerItems) { _, items in
+            guard !items.isEmpty else { return }
+            Task {
+                for item in items {
+                    if let data = try? await item.loadTransferable(type: Data.self) {
+                        appliance.addPhoto(data: data)
+                    }
+                }
+                photoPickerItems = []
+            }
+        }
+    }
+
+    private func deletePhoto(_ photo: AppliancePhoto) {
+        appliance.photos?.removeAll { $0.id == photo.id }
+        modelContext.delete(photo)
     }
     
     private func deleteDocuments(offsets: IndexSet) {

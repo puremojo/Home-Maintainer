@@ -58,7 +58,7 @@ struct ServiceProviderDetailView: View {
             
             if !provider.notes.isEmpty {
                 Section("Notes") {
-                    Text(provider.notes)
+                    LinkedText(text: provider.notes)
                 }
             }
             

@@ -7,11 +7,12 @@
 
 import SwiftUI
 import SwiftData
+import PhotosUI
 
 struct AddApplianceView: View {
     @Environment(\.modelContext) private var modelContext
     @Environment(\.dismiss) private var dismiss
-    
+
     @State private var name = ""
     @State private var type: ApplianceType = .refrigerator
     @State private var manufacturer = ""
@@ -21,6 +22,8 @@ struct AddApplianceView: View {
     @State private var notes = ""
     @State private var hasPurchaseDate = false
     @State private var hasWarranty = false
+    @State private var photoPickerItems: [PhotosPickerItem] = []
+    @State private var photoData: [Data] = []
     
     var body: some View {
         NavigationStack {
@@ -60,6 +63,38 @@ struct AddApplianceView: View {
                     }
                 }
                 
+                Section {
+                    if !photoData.isEmpty {
+                        ScrollView(.horizontal, showsIndicators: false) {
+                            HStack(spacing: 12) {
+                                ForEach(Array(photoData.enumerated()), id: \.offset) { index, data in
+                                    if let uiImage = UIImage(data: data) {
+                                        Image(uiImage: uiImage)
+                                            .resizable()
+                                            .scaledToFill()
+                                            .frame(width: 100, height: 100)
+                                            .clipShape(RoundedRectangle(cornerRadius: 8))
+                                            .contextMenu {
+                                                Button(role: .destructive) {
+                                                    photoData.remove(at: index)
+                                                } label: {
+                                                    Label("Delete", systemImage: "trash")
+                                                }
+                                            }
+                                    }
+                                }
+                            }
+                            .padding(.vertical, 4)
+                        }
+                    }
+
+                    PhotosPicker(selection: $photoPickerItems, matching: .images) {
+                        Label("Add Pictures", systemImage: "photo.badge.plus")
+                    }
+                } header: {
+                    Text("Pictures")
+                }
+
                 Section("Notes") {
                     TextField("Notes", text: $notes, axis: .vertical)
                         .lineLimit(3...6)
@@ -81,9 +116,22 @@ struct AddApplianceView: View {
                     .disabled(name.isEmpty)
                 }
             }
+            .onChange(of: photoPickerItems) { _, items in
+                guard !items.isEmpty else { return }
+                Task {
+                    var loaded: [Data] = []
+                    for item in items {
+                        if let data = try? await item.loadTransferable(type: Data.self) {
+                            loaded.append(data)
+                        }
+                    }
+                    photoData.append(contentsOf: loaded)
+                    photoPickerItems = []
+                }
+            }
         }
     }
-    
+
     private func addAppliance() {
         let appliance = Appliance(
             name: name,
@@ -101,8 +149,13 @@ struct AddApplianceView: View {
         }
         
         appliance.notes = notes
-        
+
         modelContext.insert(appliance)
+
+        for data in photoData {
+            appliance.addPhoto(data: data)
+        }
+
         dismiss()
     }
 }

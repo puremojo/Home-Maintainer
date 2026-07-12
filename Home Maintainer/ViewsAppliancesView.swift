@@ -54,16 +54,35 @@ struct AppliancesView: View {
     }
 }
 
-struct ApplianceRow: View {
+/// Shows the appliance's primary photo as a thumbnail, falling back to the
+/// type's SF Symbol icon when no photo has been added.
+struct ApplianceIconView: View {
     let appliance: Appliance
-    
+    var size: CGFloat = 40
+
     var body: some View {
-        HStack {
+        if let data = appliance.primaryPhotoData, let uiImage = UIImage(data: data) {
+            Image(uiImage: uiImage)
+                .resizable()
+                .scaledToFill()
+                .frame(width: size, height: size)
+                .clipShape(RoundedRectangle(cornerRadius: 8))
+        } else {
             Image(systemName: appliance.type.systemImage)
                 .font(.title2)
                 .foregroundStyle(.blue)
-                .frame(width: 40)
-            
+                .frame(width: size, height: size)
+        }
+    }
+}
+
+struct ApplianceRow: View {
+    let appliance: Appliance
+
+    var body: some View {
+        HStack {
+            ApplianceIconView(appliance: appliance)
+
             VStack(alignment: .leading, spacing: 4) {
                 Text(appliance.name)
                     .font(.headline)
