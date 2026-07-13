@@ -18,6 +18,7 @@ final class Appliance {
     var purchaseDate: Date?
     var warrantyExpiration: Date?
     var notes: String
+    var room: String = ""
     var createdAt: Date
     var documents: [ApplianceDocument]?
     @Relationship(deleteRule: .cascade, inverse: \AppliancePhoto.appliance)

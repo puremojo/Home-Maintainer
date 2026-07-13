@@ -8,41 +8,55 @@
 import SwiftUI
 import SwiftData
 
+struct ConversationDestination: Identifiable, Hashable {
+    let id = UUID()
+    let conversation: ChatConversation
+    let scrollToMessageID: UUID?
+
+    static func == (lhs: ConversationDestination, rhs: ConversationDestination) -> Bool {
+        lhs.id == rhs.id
+    }
+    func hash(into hasher: inout Hasher) { hasher.combine(id) }
+}
+
+struct ChatSearchResult: Identifiable {
+    var id: UUID { message.id }
+    let conversation: ChatConversation
+    let message: ChatMessageData
+    let snippet: AttributedString
+}
+
 struct HandymanView: View {
-    @Environment(OpenAIService.self) private var aiService
+    @Environment(GeminiService.self) private var aiService
     @Environment(HomeManager.self) private var homeManager
     @Environment(\.modelContext) private var modelContext
 
-    @State private var showingSettings = false
     @State private var showingHomePicker = false
-    @State private var selectedConversation: ChatConversation?
-    @State private var newConversation: ChatConversation?
+    @State private var navigationTarget: ConversationDestination?
+    @State private var showingAccount = false
 
     var body: some View {
         NavigationStack {
             if aiService.isConfigured {
                 ConversationListView(
                     homeID: homeManager.currentHome?.id,
-                    selectedConversation: $selectedConversation,
+                    navigationTarget: $navigationTarget,
                     showingHomePicker: $showingHomePicker,
+                    showingAccount: $showingAccount,
                     onNewChat: createNewConversation
                 )
+                .navigationDestination(item: $navigationTarget) { target in
+                    ChatView(conversation: target.conversation, scrollToMessageID: target.scrollToMessageID)
+                }
             } else {
-                SetupView(showingSettings: $showingSettings)
+                SetupView()
             }
-        }
-        .sheet(isPresented: $showingSettings) {
-            APIKeySettingsView()
         }
         .sheet(isPresented: $showingHomePicker) {
             HomePickerView()
         }
-        .sheet(item: $selectedConversation) { conversation in
-            ChatView(conversation: conversation)
-        }
-        .sheet(item: $newConversation) { conversation in
-            ChatView(conversation: conversation)
-                .onDisappear { newConversation = nil }
+        .sheet(isPresented: $showingAccount) {
+            SubscriptionView()
         }
     }
 
@@ -50,23 +64,60 @@ struct HandymanView: View {
         let conversation = ChatConversation()
         conversation.home = homeManager.currentHome
         modelContext.insert(conversation)
-        newConversation = conversation
+        navigationTarget = ConversationDestination(conversation: conversation, scrollToMessageID: nil)
     }
 }
 
 struct ConversationListView: View {
     @Environment(\.modelContext) private var modelContext
+    @Environment(AuthService.self) private var authService
     @Query(sort: \ChatConversation.lastMessageAt, order: .reverse) private var allConversations: [ChatConversation]
+    @Query(sort: \ChatMessageData.timestamp, order: .reverse) private var allMessages: [ChatMessageData]
 
     let homeID: UUID?
-    @Binding var selectedConversation: ChatConversation?
+    @Binding var navigationTarget: ConversationDestination?
     @Binding var showingHomePicker: Bool
+    @Binding var showingAccount: Bool
     let onNewChat: () -> Void
-    @State private var showingSettings = false
+
+    @State private var searchText = ""
 
     private var conversations: [ChatConversation] {
         guard let id = homeID else { return [] }
         return allConversations.filter { $0.home?.id == id }
+    }
+
+    private var searchResults: [ChatSearchResult] {
+        guard !searchText.isEmpty else { return [] }
+        let query = searchText
+        return allMessages.compactMap { message in
+            guard let conversation = message.conversation,
+                  conversation.home?.id == homeID,
+                  message.content.localizedCaseInsensitiveContains(query)
+            else { return nil }
+            return ChatSearchResult(
+                conversation: conversation,
+                message: message,
+                snippet: makeSnippet(content: message.content, query: query)
+            )
+        }
+    }
+
+    private func makeSnippet(content: String, query: String) -> AttributedString {
+        guard let matchRange = content.range(of: query, options: [.caseInsensitive, .diacriticInsensitive]) else {
+            return AttributedString(String(content.prefix(120)))
+        }
+        let contextStart = content.index(matchRange.lowerBound, offsetBy: -40, limitedBy: content.startIndex) ?? content.startIndex
+        let contextEnd = content.index(matchRange.upperBound, offsetBy: 80, limitedBy: content.endIndex) ?? content.endIndex
+        let prefix = contextStart > content.startIndex ? "…" : ""
+        let suffix = contextEnd < content.endIndex ? "…" : ""
+        let window = prefix + content[contextStart..<contextEnd] + suffix
+
+        var attributed = AttributedString(window)
+        if let highlightRange = attributed.range(of: query, options: [.caseInsensitive, .diacriticInsensitive]) {
+            attributed[highlightRange].font = .body.bold()
+        }
+        return attributed
     }
 
     var body: some View {
@@ -80,6 +131,30 @@ struct ConversationListView: View {
                     Button("Select Home") { showingHomePicker = true }
                         .buttonStyle(.borderedProminent)
                 }
+            } else if !searchText.isEmpty {
+                if searchResults.isEmpty {
+                    ContentUnavailableView.search(text: searchText)
+                } else {
+                    List(searchResults) { result in
+                        Button {
+                            navigationTarget = ConversationDestination(
+                                conversation: result.conversation,
+                                scrollToMessageID: result.message.id
+                            )
+                        } label: {
+                            VStack(alignment: .leading, spacing: 4) {
+                                Text(result.conversation.title)
+                                    .font(.headline)
+                                    .lineLimit(1)
+                                Text(result.snippet)
+                                    .font(.subheadline)
+                                    .foregroundStyle(.secondary)
+                                    .lineLimit(2)
+                            }
+                            .padding(.vertical, 2)
+                        }
+                    }
+                }
             } else {
                 List {
                     if conversations.isEmpty {
@@ -91,7 +166,7 @@ struct ConversationListView: View {
                     } else {
                         ForEach(conversations) { conversation in
                             Button {
-                                selectedConversation = conversation
+                                navigationTarget = ConversationDestination(conversation: conversation, scrollToMessageID: nil)
                             } label: {
                                 VStack(alignment: .leading, spacing: 4) {
                                     Text(conversation.title)
@@ -117,16 +192,17 @@ struct ConversationListView: View {
                 }
             }
         }
+        .searchable(text: $searchText, prompt: "Search conversations")
         .navigationTitle("hAIndyman")
         .toolbar {
             ToolbarItem(placement: .topBarLeading) {
                 HomePickerButton(showingPicker: $showingHomePicker)
             }
-            ToolbarItem(placement: .topBarLeading) {
+            ToolbarItem(placement: .topBarTrailing) {
                 Button {
-                    showingSettings = true
+                    showingAccount = true
                 } label: {
-                    Image(systemName: "gearshape")
+                    Image(systemName: "person.circle")
                 }
             }
             ToolbarItem(placement: .primaryAction) {
@@ -138,11 +214,8 @@ struct ConversationListView: View {
                 .disabled(homeID == nil)
             }
         }
-        .sheet(isPresented: $showingSettings) {
-            APIKeySettingsView()
-        }
     }
-    
+
     private func deleteConversations(offsets: IndexSet) {
         for index in offsets {
             modelContext.delete(conversations[index])
@@ -151,40 +224,33 @@ struct ConversationListView: View {
 }
 
 struct SetupView: View {
-    @Binding var showingSettings: Bool
-    
     var body: some View {
         ContentUnavailableView {
             Label("hAIndyman", systemImage: "wrench.and.screwdriver")
         } description: {
-            Text("Your AI assistant for home maintenance")
-        } actions: {
-            Button {
-                showingSettings = true
-            } label: {
-                Text("Add API Key")
-            }
-            .buttonStyle(.borderedProminent)
+            Text("Gemini is not available. Please ensure your Firebase project is configured correctly.")
         }
     }
 }
 
 struct ChatView: View {
-    @Environment(OpenAIService.self) private var aiService
+    @Environment(GeminiService.self) private var aiService
+    @Environment(AuthService.self) private var authService
     @Environment(\.modelContext) private var modelContext
-    @Environment(\.dismiss) private var dismiss
+    @Environment(HomeManager.self) private var homeManager
     @Environment(LocationManager.self) private var locationManager
     @Environment(LocalBusinessSearchService.self) private var searchService
     @Query private var tasks: [MaintenanceTask]
     @Query private var appliances: [Appliance]
     @Query private var providers: [ServiceProvider]
-    
+
     @Bindable var conversation: ChatConversation
-    
+    var scrollToMessageID: UUID? = nil
+
     @State private var messages: [ChatMessage] = []
+    @State private var scrollTargetID: UUID?
     @State private var inputText = ""
     @State private var isLoading = false
-    @State private var showingSettings = false
     @State private var errorMessage: String?
     @State private var showingImagePicker = false
     @State private var showingCamera = false
@@ -192,13 +258,6 @@ struct ChatView: View {
     
     var body: some View {
         VStack(spacing: 0) {
-            // Drag Indicator
-            RoundedRectangle(cornerRadius: 2.5)
-                .fill(Color.secondary.opacity(0.5))
-                .frame(width: 36, height: 5)
-                .padding(.top, 8)
-                .padding(.bottom, 4)
-            
             // Messages List
             ScrollViewReader { proxy in
                 ScrollView {
@@ -226,6 +285,15 @@ struct ChatView: View {
                     if let lastMessage = messages.last {
                         withAnimation {
                             proxy.scrollTo(lastMessage.id, anchor: .bottom)
+                        }
+                    }
+                }
+                .onChange(of: scrollTargetID) { _, targetID in
+                    if let targetID {
+                        DispatchQueue.main.asyncAfter(deadline: .now() + 0.25) {
+                            withAnimation {
+                                proxy.scrollTo(targetID, anchor: .center)
+                            }
                         }
                     }
                 }
@@ -310,30 +378,6 @@ struct ChatView: View {
         }
         .navigationTitle("hAIndyman")
         .navigationBarTitleDisplayMode(.inline)
-        .toolbar {
-            ToolbarItem(placement: .topBarLeading) {
-                Button {
-                    dismiss()
-                } label: {
-                    HStack(spacing: 4) {
-                        Image(systemName: "chevron.left")
-                            .font(.body.weight(.semibold))
-                        Text("Chats")
-                    }
-                }
-            }
-            
-            ToolbarItem(placement: .topBarTrailing) {
-                Button {
-                    showingSettings = true
-                } label: {
-                    Image(systemName: "gearshape")
-                }
-            }
-        }
-        .sheet(isPresented: $showingSettings) {
-            APIKeySettingsView()
-        }
         .sheet(isPresented: $showingImagePicker) {
             ImagePicker(selectedImages: $selectedImages)
         }
@@ -349,13 +393,16 @@ struct ChatView: View {
     }
     
     private func loadMessages() {
-        // Convert saved conversation messages to chat messages
         messages = (conversation.messages ?? []).map { savedMessage in
-            ChatMessage(
+            let msg = ChatMessage(
                 role: savedMessage.messageRole == .user ? .user : .assistant,
                 content: savedMessage.content,
                 images: savedMessage.images
             )
+            if savedMessage.id == scrollToMessageID {
+                scrollTargetID = msg.id
+            }
+            return msg
         }
         
         // Add welcome message if empty
@@ -370,9 +417,15 @@ struct ChatView: View {
     private func sendMessage() {
         let userMessage = inputText
         let images = selectedImages
+        errorMessage = nil
+
+        guard !authService.subscriptionData.isAtLimit else {
+            errorMessage = GeminiError.quotaExceeded.errorDescription
+            return
+        }
+
         inputText = ""
         selectedImages = []
-        errorMessage = nil
         
         // Convert images to Data for saving
         let imageData = images.compactMap { $0.jpegData(compressionQuality: 0.8) }
@@ -394,13 +447,29 @@ struct ChatView: View {
                     await handleToolCall(toolCall)
                 }
                 
+                // Save full response to store immediately
                 await MainActor.run {
-                    // Save AI response to conversation
                     conversation.addMessage(role: .assistant, content: response)
-                    
-                    // Add to UI
-                    messages.append(ChatMessage(role: .assistant, content: response))
                     isLoading = false
+                }
+                
+                // Animate response word-by-word
+                let streamId = UUID()
+                await MainActor.run {
+                    messages.append(ChatMessage(role: .assistant, content: "", id: streamId))
+                }
+                let words = response.components(separatedBy: " ")
+                let delayMs = UInt64(max(10, min(60, 4000 / max(words.count, 1))))
+                var accumulated = ""
+                for (i, word) in words.enumerated() {
+                    accumulated += (i == 0 ? "" : " ") + word
+                    let text = accumulated
+                    await MainActor.run {
+                        if let idx = messages.firstIndex(where: { $0.id == streamId }) {
+                            messages[idx].content = text
+                        }
+                    }
+                    try? await Task.sleep(nanoseconds: delayMs * 1_000_000)
                 }
             } catch {
                 await MainActor.run {
@@ -427,6 +496,9 @@ struct ChatView: View {
             
         case "add_service_provider":
             return await addServiceProvider(from: arguments)
+
+        case "create_repair_project":
+            return await createRepairProject(from: arguments)
             
         default:
             return "Unknown function: \(functionName)"
@@ -457,7 +529,7 @@ struct ChatView: View {
                 description: params.description,
                 frequency: frequency
             )
-            
+            task.home = homeManager.currentHome
             modelContext.insert(task)
         }
         
@@ -490,7 +562,7 @@ struct ChatView: View {
                 type: applianceType,
                 manufacturer: params.manufacturer ?? ""
             )
-            
+            appliance.home = homeManager.currentHome
             modelContext.insert(appliance)
         }
         
@@ -578,10 +650,53 @@ struct ChatView: View {
                 provider.address = address
             }
             
+            provider.home = homeManager.currentHome
             modelContext.insert(provider)
         }
         
         return "✅ Added \(params.name) to your providers"
+    }
+
+    private func createRepairProject(from jsonString: String) async -> String {
+        guard let data = jsonString.data(using: .utf8),
+              let params = try? JSONDecoder().decode(RepairProjectParams.self, from: data) else {
+            return "Failed to parse project parameters"
+        }
+
+        await MainActor.run {
+            let category: ServiceCategory
+            switch params.category {
+            case "electrician": category = .electrician
+            case "plumber": category = .plumber
+            case "generalContractor": category = .generalContractor
+            case "roofer": category = .roofer
+            case "hvac": category = .hvac
+            case "carpenter": category = .carpenter
+            case "painter": category = .painter
+            case "landscaper": category = .landscaper
+            case "handyman": category = .handyman
+            case "appliance": category = .appliance
+            default: category = .other
+            }
+
+            let priority: ProjectPriority
+            switch params.priority ?? "medium" {
+            case "low": priority = .low
+            case "high": priority = .high
+            default: priority = .medium
+            }
+
+            let project = RepairProject(
+                title: params.title,
+                description: params.description,
+                category: category,
+                priority: priority
+            )
+            project.home = homeManager.currentHome
+            modelContext.insert(project)
+        }
+
+        return "✅ Created project: \(params.title)"
     }
     
     private func buildContext() -> String {
@@ -635,11 +750,25 @@ struct MessageBubble: View {
                 
                 // Show text if present
                 if !message.content.isEmpty {
-                    Text(message.content)
-                        .padding(12)
-                        .background(message.role == .user ? Color.blue : Color(.systemGray5))
-                        .foregroundStyle(message.role == .user ? .white : .primary)
-                        .cornerRadius(16)
+                    if message.role == .assistant {
+                        let attributed = (try? AttributedString(
+                            markdown: message.content,
+                            options: .init(interpretedSyntax: .inlineOnlyPreservingWhitespace)
+                        )) ?? AttributedString(message.content)
+                        Text(attributed)
+                            .tint(.blue)
+                            .textSelection(.enabled)
+                            .padding(12)
+                            .background(Color(.systemGray5))
+                            .foregroundStyle(.primary)
+                            .cornerRadius(16)
+                    } else {
+                        Text(message.content)
+                            .padding(12)
+                            .background(Color.blue)
+                            .foregroundStyle(.white)
+                            .cornerRadius(16)
+                    }
                 }
                 
                 Text(message.timestamp, format: .dateTime.hour().minute())
@@ -655,110 +784,21 @@ struct MessageBubble: View {
     }
 }
 
-struct APIKeySettingsView: View {
-    @Environment(OpenAIService.self) private var aiService
-    @Environment(\.dismiss) private var dismiss
-    
-    @State private var apiKey: String = ""
-    @State private var showingKey = false
-    
-    var body: some View {
-        NavigationStack {
-            Form {
-                Section {
-                    VStack(alignment: .leading, spacing: 8) {
-                        HStack {
-                            if showingKey {
-                                TextField("sk-proj-...", text: $apiKey)
-                                    .textInputAutocapitalization(.never)
-                                    .autocorrectionDisabled()
-                                    .font(.system(.body, design: .monospaced))
-                            } else {
-                                SecureField("sk-proj-...", text: $apiKey)
-                                    .textInputAutocapitalization(.never)
-                                    .autocorrectionDisabled()
-                                    .font(.system(.body, design: .monospaced))
-                            }
-                            
-                            Button {
-                                showingKey.toggle()
-                            } label: {
-                                Image(systemName: showingKey ? "eye.slash" : "eye")
-                                    .foregroundStyle(.secondary)
-                            }
-                        }
-                        
-                        if aiService.isConfigured {
-                            Label("API key is configured", systemImage: "checkmark.circle.fill")
-                                .font(.caption)
-                                .foregroundStyle(.green)
-                        }
-                    }
-                } header: {
-                    Text("OpenAI API Key")
-                } footer: {
-                    Text("Get your API key from platform.openai.com. Your key is stored securely on your device.")
-                }
-                
-                Section {
-                    Link(destination: URL(string: "https://platform.openai.com/api-keys")!) {
-                        Label("Get API Key", systemImage: "key.fill")
-                    }
-                    
-                    Link(destination: URL(string: "https://platform.openai.com/usage")!) {
-                        Label("View Usage", systemImage: "chart.bar.fill")
-                    }
-                }
-                
-                if aiService.isConfigured {
-                    Section {
-                        Button(role: .destructive) {
-                            aiService.deleteAPIKey()
-                            apiKey = ""
-                            dismiss()
-                        } label: {
-                            Label("Remove API Key", systemImage: "trash")
-                        }
-                    }
-                }
-            }
-            .navigationTitle("Settings")
-            .navigationBarTitleDisplayMode(.inline)
-            .toolbar {
-                ToolbarItem(placement: .cancellationAction) {
-                    Button("Cancel") {
-                        dismiss()
-                    }
-                }
-                
-                ToolbarItem(placement: .confirmationAction) {
-                    Button("Save") {
-                        aiService.saveAPIKey(apiKey)
-                        dismiss()
-                    }
-                    .disabled(apiKey.isEmpty)
-                }
-            }
-            .onAppear {
-                apiKey = aiService.apiKey ?? ""
-            }
-        }
-    }
-}
-
 // MARK: - Models
 
 struct ChatMessage: Identifiable {
-    let id = UUID()
+    let id: UUID
     let role: Role
-    let content: String
+    var content: String
     let images: [UIImage]
-    let timestamp = Date()
+    let timestamp: Date
     
-    init(role: Role, content: String, images: [UIImage] = []) {
+    init(role: Role, content: String, images: [UIImage] = [], id: UUID = UUID()) {
+        self.id = id
         self.role = role
         self.content = content
         self.images = images
+        self.timestamp = Date()
     }
     
     enum Role {
@@ -767,27 +807,34 @@ struct ChatMessage: Identifiable {
     }
 }
 
-struct TaskParams: Codable {
+private struct TaskParams: Codable {
     let name: String
     let description: String
     let frequency: String
 }
 
-struct ApplianceParams: Codable {
+private struct ApplianceParams: Codable {
     let name: String
     let type: String
     let manufacturer: String?
 }
 
-struct SearchProviderParams: Codable {
+private struct SearchProviderParams: Codable {
     let category: String
 }
 
-struct ServiceProviderParams: Codable {
+private struct ServiceProviderParams: Codable {
     let name: String
     let category: String
     let phoneNumber: String?
     let address: String?
+}
+
+private struct RepairProjectParams: Codable {
+    let title: String
+    let description: String
+    let category: String
+    let priority: String?
 }
 
 // MARK: - Image Pickers
@@ -876,7 +923,7 @@ struct CameraPicker: UIViewControllerRepresentable {
 
 #Preview {
     HandymanView()
-        .environment(OpenAIService())
+        .environment(GeminiService())
         .modelContainer(for: [MaintenanceTask.self, Appliance.self], inMemory: true)
 }
 

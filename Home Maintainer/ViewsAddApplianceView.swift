@@ -23,6 +23,7 @@ struct AddApplianceView: View {
     @State private var type: ApplianceType = .refrigerator
     @State private var manufacturer = ""
     @State private var modelNumber = ""
+    @State private var room = ""
     @State private var purchaseDate: Date?
     @State private var warrantyExpiration: Date?
     @State private var notes = ""
@@ -47,6 +48,7 @@ struct AddApplianceView: View {
                 Section("Details") {
                     TextField("Manufacturer", text: $manufacturer)
                     TextField("Model Number", text: $modelNumber)
+                    TextField("Room", text: $room)
                 }
                 
                 Section {
@@ -155,6 +157,7 @@ struct AddApplianceView: View {
         }
         
         appliance.notes = notes
+        appliance.room = room
         appliance.home = home
 
         modelContext.insert(appliance)

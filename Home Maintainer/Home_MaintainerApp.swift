@@ -7,13 +7,27 @@
 
 import SwiftUI
 import SwiftData
+import FirebaseCore
+import FirebaseAppCheck
 
 @main
 struct Home_MaintainerApp: App {
+    @State private var authService: AuthService
     @State private var locationManager = LocationManager()
     @State private var businessSearchService = LocalBusinessSearchService()
-    @State private var openAIService = OpenAIService()
+    @State private var geminiService: GeminiService
+    @State private var subscriptionService: SubscriptionService
     @State private var homeManager = HomeManager()
+
+    init() {
+        #if DEBUG
+        AppCheck.setAppCheckProviderFactory(AppCheckDebugProviderFactory())
+        #endif
+        FirebaseApp.configure()
+        _authService = State(initialValue: AuthService())
+        _geminiService = State(initialValue: GeminiService())
+        _subscriptionService = State(initialValue: SubscriptionService())
+    }
 
     var sharedModelContainer: ModelContainer = {
         let schema = Schema([
@@ -55,9 +69,11 @@ struct Home_MaintainerApp: App {
     var body: some Scene {
         WindowGroup {
             ContentView()
+                .environment(authService)
                 .environment(locationManager)
                 .environment(businessSearchService)
-                .environment(openAIService)
+                .environment(geminiService)
+                .environment(subscriptionService)
                 .environment(homeManager)
                 .onOpenURL { url in
                     homeManager.pendingImportURL = url

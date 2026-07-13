@@ -13,6 +13,8 @@ import PhotosUI
 
 struct ApplianceDetailView: View {
     @Environment(\.modelContext) private var modelContext
+    @Environment(GeminiService.self) private var geminiService
+    @Environment(HomeManager.self) private var homeManager
     @Query private var allTasks: [MaintenanceTask]
     @Bindable var appliance: Appliance
     @State private var isEditing = false
@@ -20,6 +22,11 @@ struct ApplianceDetailView: View {
     @State private var selectedDocument: ApplianceDocument?
     @State private var photoPickerItems: [PhotosPickerItem] = []
     @State private var selectedPhoto: AppliancePhoto?
+    @State private var isFetchingSuggestions = false
+    @State private var suggestedTasks: [TaskSuggestion] = []
+    @State private var showTaskSuggestions = false
+    @State private var suggestionError: String?
+    @State private var showSuggestionError = false
     
     // Get tasks linked to this appliance
     var linkedTasks: [MaintenanceTask] {
@@ -32,6 +39,10 @@ struct ApplianceDetailView: View {
                 LabeledContent("Name", value: appliance.name)
                 LabeledContent("Type", value: appliance.type.rawValue)
                 
+                if !appliance.room.isEmpty {
+                    LabeledContent("Room", value: appliance.room)
+                }
+
                 if !appliance.manufacturer.isEmpty {
                     LabeledContent("Manufacturer", value: appliance.manufacturer)
                 }
@@ -156,43 +167,57 @@ struct ApplianceDetailView: View {
                 Text("Attach user manuals, warranty documents, or other files related to this appliance.")
             }
             
-            if !linkedTasks.isEmpty {
-                Section("Maintenance Tasks") {
-                    ForEach(linkedTasks) { task in
-                        NavigationLink(destination: MaintenanceTaskDetailView(task: task)) {
-                            VStack(alignment: .leading, spacing: 4) {
-                                HStack {
-                                    Text(task.name)
-                                        .font(.subheadline)
-                                        .strikethrough(task.isCompletedForCurrentCycle, color: .gray)
-                                        .foregroundStyle(task.isCompletedForCurrentCycle ? .secondary : .primary)
-                                    
-                                    if task.isCompletedForCurrentCycle {
-                                        Image(systemName: "checkmark.circle.fill")
-                                            .font(.caption2)
-                                            .foregroundStyle(.green)
-                                    }
+            Section("Maintenance Tasks") {
+                ForEach(linkedTasks) { task in
+                    NavigationLink(destination: MaintenanceTaskDetailView(task: task)) {
+                        VStack(alignment: .leading, spacing: 4) {
+                            HStack {
+                                Text(task.name)
+                                    .font(.subheadline)
+                                    .strikethrough(task.isCompletedForCurrentCycle, color: .gray)
+                                    .foregroundStyle(task.isCompletedForCurrentCycle ? .secondary : .primary)
+
+                                if task.isCompletedForCurrentCycle {
+                                    Image(systemName: "checkmark.circle.fill")
+                                        .font(.caption2)
+                                        .foregroundStyle(.green)
                                 }
-                                
-                                HStack {
-                                    Text(task.frequency.displayName)
+                            }
+
+                            HStack {
+                                Text(task.frequency.displayName)
+                                    .font(.caption)
+                                    .foregroundStyle(.secondary)
+
+                                if let nextDue = task.nextDue {
+                                    Text("•")
                                         .font(.caption)
                                         .foregroundStyle(.secondary)
-                                    
-                                    if let nextDue = task.nextDue {
-                                        Text("•")
-                                            .font(.caption)
-                                            .foregroundStyle(.secondary)
-                                        
-                                        Text("Due \(nextDue, format: .dateTime.month().day())")
-                                            .font(.caption)
-                                            .foregroundStyle(task.isOverdue ? .red : .secondary)
-                                    }
+
+                                    Text("Due \(nextDue, format: .dateTime.month().day())")
+                                        .font(.caption)
+                                        .foregroundStyle(task.isOverdue ? .red : .secondary)
                                 }
                             }
                         }
                     }
                 }
+
+                Button {
+                    fetchSuggestions()
+                } label: {
+                    if isFetchingSuggestions {
+                        HStack {
+                            ProgressView()
+                                .scaleEffect(0.8)
+                            Text("Fetching suggestions…")
+                                .foregroundStyle(.secondary)
+                        }
+                    } else {
+                        Label("Add Suggested Tasks", systemImage: "sparkles")
+                    }
+                }
+                .disabled(isFetchingSuggestions)
             }
         }
         .navigationTitle(appliance.name)
@@ -231,6 +256,18 @@ struct ApplianceDetailView: View {
                 photoPickerItems = []
             }
         }
+        .sheet(isPresented: $showTaskSuggestions) {
+            SuggestedTasksView(
+                appliance: appliance,
+                suggestions: suggestedTasks,
+                onAdd: addSuggestedTasks
+            )
+        }
+        .alert("Couldn't Get Suggestions", isPresented: $showSuggestionError) {
+            Button("OK", role: .cancel) {}
+        } message: {
+            Text(suggestionError ?? "An error occurred. Please try again.")
+        }
     }
 
     private func deletePhoto(_ photo: AppliancePhoto) {
@@ -252,6 +289,52 @@ struct ApplianceDetailView: View {
             appliance.addDocument(name: name, data: data, contentType: contentType)
         } catch {
             print("Error loading document: \(error)")
+        }
+    }
+
+    private func fetchSuggestions() {
+        isFetchingSuggestions = true
+        Task {
+            do {
+                let suggestions = try await geminiService.suggestMaintenanceTasks(for: appliance)
+                await MainActor.run {
+                    suggestedTasks = suggestions
+                    showTaskSuggestions = true
+                    isFetchingSuggestions = false
+                }
+            } catch {
+                await MainActor.run {
+                    suggestionError = error.localizedDescription
+                    showSuggestionError = true
+                    isFetchingSuggestions = false
+                }
+            }
+        }
+    }
+
+    private func addSuggestedTasks(_ tasks: [TaskSuggestion]) {
+        for suggestion in tasks {
+            let freq = TaskFrequency(fromString: suggestion.frequency) ?? .annually
+            let task = MaintenanceTask(
+                name: suggestion.name,
+                description: suggestion.description,
+                frequency: freq,
+                appliance: appliance,
+                room: appliance.room
+            )
+            task.home = homeManager.currentHome
+            modelContext.insert(task)
+
+            for product in suggestion.products {
+                let encoded = product.searchQuery
+                    .addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? product.searchQuery
+                let link = ProductLink(
+                    name: product.name,
+                    urlString: "https://www.amazon.com/s?k=\(encoded)"
+                )
+                link.task = task
+                modelContext.insert(link)
+            }
         }
     }
 }
@@ -276,6 +359,7 @@ struct EditApplianceView: View {
                 Section("Details") {
                     TextField("Manufacturer", text: $appliance.manufacturer)
                     TextField("Model Number", text: $appliance.modelNumber)
+                    TextField("Room", text: $appliance.room)
                 }
                 
                 Section("Dates") {
@@ -327,6 +411,106 @@ struct EditApplianceView: View {
         ApplianceDetailView(appliance: appliance)
     }
     .modelContainer(container)
+}
+
+// MARK: - Task Suggestions
+
+extension TaskFrequency {
+    init?(fromString string: String) {
+        switch string.lowercased() {
+        case "daily": self = .daily
+        case "weekly": self = .weekly
+        case "biweekly": self = .biweekly
+        case "monthly": self = .monthly
+        case "quarterly": self = .quarterly
+        case "biannually": self = .biannually
+        case "annually": self = .annually
+        default: return nil
+        }
+    }
+}
+
+struct SuggestedTasksView: View {
+    let appliance: Appliance
+    let suggestions: [TaskSuggestion]
+    let onAdd: ([TaskSuggestion]) -> Void
+    @Environment(\.dismiss) private var dismiss
+    @State private var selectedIndices: Set<Int>
+
+    init(appliance: Appliance, suggestions: [TaskSuggestion], onAdd: @escaping ([TaskSuggestion]) -> Void) {
+        self.appliance = appliance
+        self.suggestions = suggestions
+        self.onAdd = onAdd
+        _selectedIndices = State(initialValue: Set(suggestions.indices))
+    }
+
+    var body: some View {
+        NavigationStack {
+            List {
+                Section {
+                    Text("hAIndyman recommends these tasks for your \(appliance.type.rawValue). Select the ones you want to add.")
+                        .font(.subheadline)
+                        .foregroundStyle(.secondary)
+                }
+
+                ForEach(Array(suggestions.enumerated()), id: \.offset) { index, suggestion in
+                    Button {
+                        if selectedIndices.contains(index) {
+                            selectedIndices.remove(index)
+                        } else {
+                            selectedIndices.insert(index)
+                        }
+                    } label: {
+                        HStack(alignment: .top, spacing: 12) {
+                            Image(systemName: selectedIndices.contains(index) ? "checkmark.circle.fill" : "circle")
+                                .foregroundStyle(selectedIndices.contains(index) ? .blue : .secondary)
+                                .font(.title3)
+
+                            VStack(alignment: .leading, spacing: 4) {
+                                Text(suggestion.name)
+                                    .font(.subheadline)
+                                    .fontWeight(.semibold)
+                                    .foregroundStyle(.primary)
+                                Text(suggestion.description)
+                                    .font(.caption)
+                                    .foregroundStyle(.secondary)
+                                    .multilineTextAlignment(.leading)
+                                HStack(spacing: 6) {
+                                    Label(suggestion.frequency.capitalized, systemImage: "clock")
+                                        .font(.caption2)
+                                        .foregroundStyle(.tertiary)
+                                    if !suggestion.products.isEmpty {
+                                        Text("·")
+                                            .font(.caption2)
+                                            .foregroundStyle(.tertiary)
+                                        Label("\(suggestion.products.count) product\(suggestion.products.count == 1 ? "" : "s")", systemImage: "cart")
+                                            .font(.caption2)
+                                            .foregroundStyle(.tertiary)
+                                    }
+                                }
+                            }
+                        }
+                        .contentShape(Rectangle())
+                    }
+                    .buttonStyle(.plain)
+                }
+            }
+            .navigationTitle("Suggested Tasks")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("Cancel") { dismiss() }
+                }
+                ToolbarItem(placement: .confirmationAction) {
+                    Button("Add \(selectedIndices.count) Task\(selectedIndices.count == 1 ? "" : "s")") {
+                        onAdd(selectedIndices.sorted().map { suggestions[$0] })
+                        dismiss()
+                    }
+                    .disabled(selectedIndices.isEmpty)
+                }
+            }
+        }
+    }
 }
 
 // MARK: - Document Management

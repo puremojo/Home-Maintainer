@@ -10,10 +10,19 @@ import SwiftData
 
 struct ContentView: View {
     @Environment(\.modelContext) private var modelContext
+    @Environment(AuthService.self) private var authService
     @Environment(HomeManager.self) private var homeManager
     @Query(sort: \Home.createdDate) private var homes: [Home]
 
     var body: some View {
+        if !authService.isSignedIn {
+            SignInView()
+        } else {
+            mainContent
+        }
+    }
+
+    private var mainContent: some View {
         TabView {
             Tab("Tasks", systemImage: "checklist") {
                 MaintenanceTasksView()
@@ -82,6 +91,7 @@ struct ContentView: View {
     }
 }
 
+
 #Preview {
     ContentView()
         .modelContainer(for: [
@@ -95,5 +105,6 @@ struct ContentView: View {
             Quote.self,
             Invoice.self
         ], inMemory: true)
+        .environment(AuthService())
         .environment(HomeManager())
 }
