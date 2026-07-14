@@ -11,7 +11,9 @@ import SwiftData
 struct MaintenanceTasksView: View {
     @Environment(\.modelContext) private var modelContext
     @Environment(HomeManager.self) private var homeManager
+    @Environment(NavigationCoordinator.self) private var coordinator
     @Query(sort: \MaintenanceTask.nextDue) private var allTasks: [MaintenanceTask]
+    @State private var navigationTarget: MaintenanceTask? = nil
     @State private var showingAddTask = false
     @State private var showingHomePicker = false
     @AppStorage("taskSortOption") private var sortOption: TaskSortOption = .upNext
@@ -91,12 +93,24 @@ struct MaintenanceTasksView: View {
                     .disabled(homeManager.currentHome == nil)
                 }
             }
+            .navigationDestination(item: $navigationTarget) { task in
+                MaintenanceTaskDetailView(task: task)
+            }
+            .onAppear { handlePendingNavigation() }
+            .onChange(of: coordinator.pendingTask) { _, _ in handlePendingNavigation() }
             .sheet(isPresented: $showingAddTask) {
                 AddMaintenanceTaskView(home: homeManager.currentHome)
             }
             .sheet(isPresented: $showingHomePicker) {
                 HomePickerView()
             }
+        }
+    }
+
+    private func handlePendingNavigation() {
+        if let task = coordinator.pendingTask {
+            navigationTarget = task
+            coordinator.pendingTask = nil
         }
     }
 

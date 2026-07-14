@@ -10,6 +10,7 @@ import SwiftData
 import UniformTypeIdentifiers
 import PDFKit
 import PhotosUI
+import VisionKit
 
 struct ApplianceDetailView: View {
     @Environment(\.modelContext) private var modelContext
@@ -18,8 +19,9 @@ struct ApplianceDetailView: View {
     @Query private var allTasks: [MaintenanceTask]
     @Bindable var appliance: Appliance
     @State private var isEditing = false
-    @State private var showingDocumentPicker = false
+    @State private var showingAddDocument = false
     @State private var selectedDocument: ApplianceDocument?
+    @State private var selectedHomeDocument: HomeDocument?
     @State private var photoPickerItems: [PhotosPickerItem] = []
     @State private var selectedPhoto: AppliancePhoto?
     @State private var isFetchingSuggestions = false
@@ -117,9 +119,9 @@ struct ApplianceDetailView: View {
                         HStack {
                             Image(systemName: document.systemImage)
                                 .foregroundStyle(.blue)
-                            
+
                             VStack(alignment: .leading, spacing: 2) {
-                                Text(document.name)
+                                Text(document.displayName)
                                     .font(.subheadline)
                                     .foregroundStyle(.primary)
                                 
@@ -155,9 +157,23 @@ struct ApplianceDetailView: View {
                     }
                 }
                 .onDelete(perform: deleteDocuments)
-                
+
+                // HomeDocuments linked from the Documents tab
+                ForEach((appliance.homeDocuments ?? []).sorted { $0.createdAt < $1.createdAt }) { doc in
+                    Button {
+                        selectedHomeDocument = doc
+                    } label: {
+                        DocumentRowView(
+                            name: doc.title.isEmpty ? (doc.attachmentName ?? "Untitled") : doc.title,
+                            systemImage: doc.systemImage,
+                            subtitle: doc.title.isEmpty ? nil : doc.attachmentName
+                        )
+                    }
+                    .foregroundStyle(.primary)
+                }
+
                 Button {
-                    showingDocumentPicker = true
+                    showingAddDocument = true
                 } label: {
                     Label("Add Document", systemImage: "plus.circle.fill")
                 }
@@ -232,13 +248,20 @@ struct ApplianceDetailView: View {
         .sheet(isPresented: $isEditing) {
             EditApplianceView(appliance: appliance)
         }
-        .sheet(isPresented: $showingDocumentPicker) {
-            DocumentPicker { url, name in
-                addDocument(from: url, name: name)
+        .sheet(isPresented: $showingAddDocument) {
+            AddDocumentSheet { title, fileName, data, contentType in
+                appliance.addDocument(name: fileName, data: data, contentType: contentType, title: title)
             }
         }
         .sheet(item: $selectedDocument) { document in
             DocumentViewer(document: document)
+        }
+        .sheet(item: $selectedHomeDocument) { doc in
+            GenericDocumentViewer(
+                name: doc.attachmentName ?? doc.title,
+                data: doc.attachmentData ?? Data(),
+                contentType: doc.attachmentContentType ?? ""
+            )
         }
         .fullScreenCover(item: $selectedPhoto) { photo in
             if let data = photo.imageData, let uiImage = UIImage(data: data) {
@@ -282,16 +305,6 @@ struct ApplianceDetailView: View {
         }
     }
     
-    private func addDocument(from url: URL, name: String) {
-        do {
-            let data = try Data(contentsOf: url)
-            let contentType = url.pathExtension
-            appliance.addDocument(name: name, data: data, contentType: contentType)
-        } catch {
-            print("Error loading document: \(error)")
-        }
-    }
-
     private func fetchSuggestions() {
         isFetchingSuggestions = true
         Task {
@@ -635,7 +648,7 @@ struct DocumentViewer: View {
                     }
                 }
             }
-            .navigationTitle(document.name)
+            .navigationTitle(document.displayName)
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
@@ -696,11 +709,157 @@ struct PDFViewWrapper: UIViewRepresentable {
 
 struct ShareSheet: UIViewControllerRepresentable {
     let items: [Any]
-    
+
     func makeUIViewController(context: Context) -> UIActivityViewController {
         UIActivityViewController(activityItems: items, applicationActivities: nil)
     }
-    
+
     func updateUIViewController(_ uiViewController: UIActivityViewController, context: Context) {}
+}
+
+// MARK: - Document Scanner
+
+/// Wraps VNDocumentCameraViewController so it can be presented in SwiftUI.
+struct DocumentScannerView: UIViewControllerRepresentable {
+    let onScan: ([UIImage]) -> Void
+    let onCancel: () -> Void
+
+    func makeCoordinator() -> Coordinator { Coordinator(onScan: onScan, onCancel: onCancel) }
+
+    func makeUIViewController(context: Context) -> VNDocumentCameraViewController {
+        let vc = VNDocumentCameraViewController()
+        vc.delegate = context.coordinator
+        return vc
+    }
+
+    func updateUIViewController(_ uiViewController: VNDocumentCameraViewController, context: Context) {}
+
+    final class Coordinator: NSObject, VNDocumentCameraViewControllerDelegate {
+        let onScan: ([UIImage]) -> Void
+        let onCancel: () -> Void
+
+        init(onScan: @escaping ([UIImage]) -> Void, onCancel: @escaping () -> Void) {
+            self.onScan = onScan
+            self.onCancel = onCancel
+        }
+
+        func documentCameraViewController(_ controller: VNDocumentCameraViewController, didFinishWith scan: VNDocumentCameraScan) {
+            let images = (0..<scan.pageCount).map { scan.imageOfPage(at: $0) }
+            onScan(images)
+        }
+
+        func documentCameraViewControllerDidCancel(_ controller: VNDocumentCameraViewController) {
+            onCancel()
+        }
+
+        func documentCameraViewController(_ controller: VNDocumentCameraViewController, didFailWithError error: Error) {
+            onCancel()
+        }
+    }
+}
+
+/// Combines an array of scanned page images into a single PDF and returns the raw data.
+func scannedImagesToPDF(_ images: [UIImage]) -> Data? {
+    let pdf = PDFDocument()
+    for (index, image) in images.enumerated() {
+        guard let page = PDFPage(image: image) else { continue }
+        pdf.insert(page, at: index)
+    }
+    return pdf.dataRepresentation()
+}
+
+// MARK: - Shared Add-Document Sheet
+
+/// Reusable sheet that lets the user optionally name a document before attaching a file.
+/// Used by both appliance and task detail views.
+struct AddDocumentSheet: View {
+    @Environment(\.dismiss) private var dismiss
+    // title, fileName, data, contentType
+    let onAdd: (String, String, Data, String) -> Void
+
+    @State private var title = ""
+    @State private var pendingData: Data?
+    @State private var pendingFileName: String?
+    @State private var pendingContentType: String?
+    @State private var showingPicker = false
+    @State private var showingScanner = false
+
+    var body: some View {
+        NavigationStack {
+            Form {
+                Section {
+                    TextField("Document Title (optional)", text: $title)
+                } footer: {
+                    Text("If left blank, the file name will be used as the title.")
+                }
+
+                Section("File") {
+                    if let fileName = pendingFileName {
+                        HStack {
+                            Image(systemName: "doc.fill").foregroundStyle(.blue)
+                            Text(fileName).foregroundStyle(.primary)
+                            Spacer()
+                            Button(role: .destructive) {
+                                pendingData = nil
+                                pendingFileName = nil
+                                pendingContentType = nil
+                            } label: {
+                                Image(systemName: "xmark.circle.fill").foregroundStyle(.secondary)
+                            }
+                        }
+                    }
+                    Button {
+                        showingPicker = true
+                    } label: {
+                        Label(pendingData == nil ? "Choose File" : "Replace File", systemImage: "folder")
+                    }
+                    if VNDocumentCameraViewController.isSupported {
+                        Button {
+                            showingScanner = true
+                        } label: {
+                            Label(pendingData == nil ? "Scan Document" : "Re-scan Document", systemImage: "doc.viewfinder")
+                        }
+                    }
+                }
+            }
+            .navigationTitle("Add Document")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("Cancel") { dismiss() }
+                }
+                ToolbarItem(placement: .confirmationAction) {
+                    Button("Add") {
+                        if let data = pendingData, let fileName = pendingFileName, let ct = pendingContentType {
+                            onAdd(title, fileName, data, ct)
+                        }
+                        dismiss()
+                    }
+                    .disabled(pendingData == nil)
+                }
+            }
+            .sheet(isPresented: $showingPicker) {
+                DocumentPicker { url, name in
+                    guard let data = try? Data(contentsOf: url) else { return }
+                    pendingData = data
+                    pendingFileName = name
+                    pendingContentType = url.pathExtension
+                }
+            }
+            .fullScreenCover(isPresented: $showingScanner) {
+                DocumentScannerView { images in
+                    if let pdfData = scannedImagesToPDF(images) {
+                        pendingData = pdfData
+                        pendingFileName = "Scanned Document.pdf"
+                        pendingContentType = "pdf"
+                    }
+                    showingScanner = false
+                } onCancel: {
+                    showingScanner = false
+                }
+                .ignoresSafeArea()
+            }
+        }
+    }
 }
 

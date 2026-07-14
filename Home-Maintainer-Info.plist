@@ -20,6 +20,12 @@
 	<key>NSLocationWhenInUseUsageDescription</key>
 	<string>We need your location to find local service providers near you</string>
 
+	<key>NSCameraUsageDescription</key>
+	<string>Camera access is used to take photos of appliances and scan documents.</string>
+
+	<key>NSPhotoLibraryUsageDescription</key>
+	<string>Photo library access is used to attach photos to appliances and send images to hAIndyman.</string>
+
 	<key>UIApplicationSceneManifest</key>
 	<dict>
 		<key>UIApplicationSupportsMultipleScenes</key>

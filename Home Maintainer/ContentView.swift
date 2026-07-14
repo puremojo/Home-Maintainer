@@ -8,11 +8,21 @@
 import SwiftUI
 import SwiftData
 
+// Shared navigation state for cross-tab deep-links (e.g. "Take me to this appliance").
+@Observable
+final class NavigationCoordinator {
+    var selectedTab: String = "tasks"
+    var pendingAppliance: Appliance? = nil
+    var pendingProject: RepairProject? = nil
+    var pendingTask: MaintenanceTask? = nil
+}
+
 struct ContentView: View {
     @Environment(\.modelContext) private var modelContext
     @Environment(AuthService.self) private var authService
     @Environment(HomeManager.self) private var homeManager
     @Query(sort: \Home.createdDate) private var homes: [Home]
+    @State private var coordinator = NavigationCoordinator()
 
     var body: some View {
         if !authService.isSignedIn {
@@ -23,23 +33,27 @@ struct ContentView: View {
     }
 
     private var mainContent: some View {
-        TabView {
-            Tab("Tasks", systemImage: "checklist") {
+        TabView(selection: Binding(
+            get: { coordinator.selectedTab },
+            set: { coordinator.selectedTab = $0 }
+        )) {
+            Tab("Tasks", systemImage: "checklist", value: "tasks") {
                 MaintenanceTasksView()
             }
-            Tab("Appliances", systemImage: "refrigerator") {
+            Tab("Appliances", systemImage: "refrigerator", value: "appliances") {
                 AppliancesView()
             }
-            Tab("Providers", systemImage: "person.2") {
-                ServiceProvidersView()
-            }
-            Tab("Projects", systemImage: "hammer") {
-                RepairProjectsView()
-            }
-            Tab("hAIndyman", systemImage: "wrench.and.screwdriver") {
+            Tab("hAIndyman", systemImage: "wrench.and.screwdriver", value: "handyman") {
                 HandymanView()
             }
+            Tab("Projects", systemImage: "hammer", value: "projects") {
+                RepairProjectsView()
+            }
+            Tab("More", systemImage: "ellipsis", value: "more") {
+                MoreView()
+            }
         }
+        .environment(coordinator)
         .task {
             migrateIfNeeded()
             homeManager.restoreSelection(from: homes)
@@ -103,7 +117,9 @@ struct ContentView: View {
             RepairProject.self,
             ProjectContact.self,
             Quote.self,
-            Invoice.self
+            Invoice.self,
+            DocumentSection.self,
+            HomeDocument.self
         ], inMemory: true)
         .environment(AuthService())
         .environment(HomeManager())

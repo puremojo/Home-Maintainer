@@ -26,6 +26,7 @@ final class RepairProject {
     var startDate: Date?
     var completionDate: Date?
     var notes: String
+    var projectDocuments: [ProjectDocument]?
     var createdAt: Date
     var home: Home?
 
@@ -37,7 +38,18 @@ final class RepairProject {
         self.status = .planning
         self.priority = priority
         self.notes = ""
+        self.projectDocuments = []
         self.createdAt = Date()
+    }
+
+    func addDocument(name: String, data: Data, contentType: String, title: String = "") {
+        let document = ProjectDocument(name: name, data: data, contentType: contentType, title: title)
+        if projectDocuments == nil { projectDocuments = [] }
+        projectDocuments?.append(document)
+    }
+
+    func removeDocument(_ document: ProjectDocument) {
+        projectDocuments?.removeAll { $0.id == document.id }
     }
     
     var totalQuotedAmount: Double {
@@ -149,6 +161,57 @@ final class Quote {
         self.quoteDate = quoteDate
         self.details = ""
         self.wasAccepted = false
+    }
+}
+
+struct ProjectDocument: Codable, Identifiable {
+    let id: UUID
+    let name: String        // actual file name
+    var title: String       // user-provided display title (empty = use name)
+    let data: Data
+    let contentType: String
+    let dateAdded: Date
+
+    init(name: String, data: Data, contentType: String, title: String = "") {
+        self.id = UUID()
+        self.name = name
+        self.title = title
+        self.data = data
+        self.contentType = contentType
+        self.dateAdded = Date()
+    }
+
+    // Backward-compat: old records lack `title`
+    enum CodingKeys: String, CodingKey {
+        case id, name, title, data, contentType, dateAdded
+    }
+
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        id = try c.decode(UUID.self, forKey: .id)
+        name = try c.decode(String.self, forKey: .name)
+        title = (try? c.decode(String.self, forKey: .title)) ?? ""
+        data = try c.decode(Data.self, forKey: .data)
+        contentType = try c.decode(String.self, forKey: .contentType)
+        dateAdded = try c.decode(Date.self, forKey: .dateAdded)
+    }
+
+    var displayName: String { title.isEmpty ? name : title }
+
+    var fileExtension: String {
+        if contentType.contains("pdf") { return "pdf" }
+        else if contentType.contains("word") { return "doc" }
+        else if contentType.contains("text") { return "txt" }
+        else { return "file" }
+    }
+
+    var systemImage: String {
+        switch fileExtension {
+        case "pdf": return "doc.fill"
+        case "doc": return "doc.text.fill"
+        case "txt": return "doc.plaintext.fill"
+        default: return "doc.fill"
+        }
     }
 }
 

@@ -11,9 +11,11 @@ import SwiftData
 struct AppliancesView: View {
     @Environment(\.modelContext) private var modelContext
     @Environment(HomeManager.self) private var homeManager
+    @Environment(NavigationCoordinator.self) private var coordinator
     @Query(sort: \Appliance.name) private var allAppliances: [Appliance]
     @State private var showingAddAppliance = false
     @State private var showingHomePicker = false
+    @State private var navigationTarget: Appliance? = nil
 
     private var appliances: [Appliance] {
         guard let home = homeManager.currentHome else { return [] }
@@ -52,6 +54,9 @@ struct AppliancesView: View {
                 }
             }
             .navigationTitle("Appliances")
+            .navigationDestination(item: $navigationTarget) { appliance in
+                ApplianceDetailView(appliance: appliance)
+            }
             .toolbar {
                 ToolbarItem(placement: .topBarLeading) {
                     HomePickerButton(showingPicker: $showingHomePicker)
@@ -71,6 +76,15 @@ struct AppliancesView: View {
             .sheet(isPresented: $showingHomePicker) {
                 HomePickerView()
             }
+            .onAppear { handlePendingNavigation() }
+            .onChange(of: coordinator.pendingAppliance) { _, _ in handlePendingNavigation() }
+        }
+    }
+
+    private func handlePendingNavigation() {
+        if let appliance = coordinator.pendingAppliance {
+            navigationTarget = appliance
+            coordinator.pendingAppliance = nil
         }
     }
 
@@ -113,17 +127,17 @@ struct ApplianceRow: View {
             VStack(alignment: .leading, spacing: 4) {
                 Text(appliance.name)
                     .font(.headline)
-                
+
                 HStack {
                     Text(appliance.type.rawValue)
                         .font(.caption)
                         .foregroundStyle(.secondary)
-                    
+
                     if !appliance.manufacturer.isEmpty {
                         Text("•")
                             .font(.caption)
                             .foregroundStyle(.secondary)
-                        
+
                         Text(appliance.manufacturer)
                             .font(.caption)
                             .foregroundStyle(.secondary)
@@ -137,4 +151,6 @@ struct ApplianceRow: View {
 #Preview {
     AppliancesView()
         .modelContainer(for: Appliance.self, inMemory: true)
+        .environment(NavigationCoordinator())
+        .environment(HomeManager())
 }

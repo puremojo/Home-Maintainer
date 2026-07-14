@@ -44,7 +44,9 @@ struct Home_MaintainerApp: App {
             Invoice.self,
             ChatConversation.self,
             ChatMessageData.self,
-            ChatImageData.self
+            ChatImageData.self,
+            DocumentSection.self,
+            HomeDocument.self
         ])
 
         let modelConfiguration = ModelConfiguration(

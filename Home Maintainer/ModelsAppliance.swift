@@ -23,6 +23,8 @@ final class Appliance {
     var documents: [ApplianceDocument]?
     @Relationship(deleteRule: .cascade, inverse: \AppliancePhoto.appliance)
     var photos: [AppliancePhoto]?
+    @Relationship(deleteRule: .nullify, inverse: \HomeDocument.linkedAppliance)
+    var homeDocuments: [HomeDocument]?
     var home: Home?
 
     init(name: String, type: ApplianceType, manufacturer: String = "", modelNumber: String = "") {
@@ -37,8 +39,8 @@ final class Appliance {
         self.photos = []
     }
 
-    func addDocument(name: String, data: Data, contentType: String) {
-        let document = ApplianceDocument(name: name, data: data, contentType: contentType)
+    func addDocument(name: String, data: Data, contentType: String, title: String = "") {
+        let document = ApplianceDocument(name: name, data: data, contentType: contentType, title: title)
         if documents == nil {
             documents = []
         }
@@ -82,18 +84,37 @@ final class AppliancePhoto {
 
 struct ApplianceDocument: Codable, Identifiable {
     let id: UUID
-    let name: String
+    let name: String        // actual file name
+    var title: String       // user-provided display title (empty = use name)
     let data: Data
     let contentType: String
     let dateAdded: Date
-    
-    init(name: String, data: Data, contentType: String) {
+
+    init(name: String, data: Data, contentType: String, title: String = "") {
         self.id = UUID()
         self.name = name
+        self.title = title
         self.data = data
         self.contentType = contentType
         self.dateAdded = Date()
     }
+
+    // Backward-compat: old records lack `title`
+    enum CodingKeys: String, CodingKey {
+        case id, name, title, data, contentType, dateAdded
+    }
+
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        id = try c.decode(UUID.self, forKey: .id)
+        name = try c.decode(String.self, forKey: .name)
+        title = (try? c.decode(String.self, forKey: .title)) ?? ""
+        data = try c.decode(Data.self, forKey: .data)
+        contentType = try c.decode(String.self, forKey: .contentType)
+        dateAdded = try c.decode(Date.self, forKey: .dateAdded)
+    }
+
+    var displayName: String { title.isEmpty ? name : title }
     
     var fileExtension: String {
         if contentType.contains("pdf") {

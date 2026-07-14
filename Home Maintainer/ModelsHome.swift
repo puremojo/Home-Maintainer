@@ -32,6 +32,12 @@ final class Home {
     @Relationship(deleteRule: .cascade, inverse: \ChatConversation.home)
     var chatConversations: [ChatConversation]?
 
+    @Relationship(deleteRule: .cascade, inverse: \DocumentSection.home)
+    var documentSections: [DocumentSection]?
+
+    @Relationship(deleteRule: .cascade, inverse: \HomeDocument.home)
+    var homeDocuments: [HomeDocument]?
+
     init(name: String, address: String = "", ownerName: String = "", isLocallyCreated: Bool = true) {
         self.id = UUID()
         self.name = name

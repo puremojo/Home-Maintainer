@@ -11,6 +11,7 @@ import SwiftData
 struct MaintenanceTaskDetailView: View {
     @Environment(\.modelContext) private var modelContext
     @Query private var allAppliances: [Appliance]
+    @Query private var allHomeDocuments: [HomeDocument]
     @Bindable var task: MaintenanceTask
     @State private var showingCompleteSheet = false
     @State private var showingReopenConfirmation = false
@@ -18,6 +19,15 @@ struct MaintenanceTaskDetailView: View {
     @State private var showingEditTask = false
     @State private var editingRecord: MaintenanceRecord?
     @State private var productEditorTarget: ProductEditorTarget?
+    @State private var showingTaskDocumentPicker = false
+    @State private var selectedTaskDocument: TaskDocument?
+    @State private var selectedLinkedHomeDocument: HomeDocument?
+
+    private var linkedHomeDocuments: [HomeDocument] {
+        allHomeDocuments
+            .filter { $0.linkedTaskIDs.contains(task.id) }
+            .sorted { $0.createdAt < $1.createdAt }
+    }
     
     // Check if task is completed and not yet due again
     var isCompletedForCurrentCycle: Bool {
@@ -162,6 +172,74 @@ struct MaintenanceTaskDetailView: View {
             )
 
             Section {
+                ForEach(task.taskDocuments ?? []) { document in
+                    Button {
+                        selectedTaskDocument = document
+                    } label: {
+                        HStack {
+                            Image(systemName: document.systemImage)
+                                .foregroundStyle(.blue)
+                            VStack(alignment: .leading, spacing: 2) {
+                                Text(document.displayName)
+                                    .font(.subheadline)
+                                    .foregroundStyle(.primary)
+                                HStack {
+                                    Text(document.fileExtension.uppercased())
+                                        .font(.caption2)
+                                        .foregroundStyle(.secondary)
+                                    Text("•")
+                                        .font(.caption2)
+                                        .foregroundStyle(.secondary)
+                                    Text(document.dateAdded, format: .dateTime.month().day().year())
+                                        .font(.caption2)
+                                        .foregroundStyle(.secondary)
+                                    Text("•")
+                                        .font(.caption2)
+                                        .foregroundStyle(.secondary)
+                                    Text(ByteCountFormatter.string(fromByteCount: Int64(document.data.count), countStyle: .file))
+                                        .font(.caption2)
+                                        .foregroundStyle(.secondary)
+                                }
+                            }
+                            Spacer()
+                            Image(systemName: "chevron.right")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                        }
+                    }
+                }
+                .onDelete { offsets in
+                    let docs = task.taskDocuments ?? []
+                    for index in offsets {
+                        task.removeDocument(docs[index])
+                    }
+                }
+
+                ForEach(linkedHomeDocuments) { doc in
+                    Button {
+                        selectedLinkedHomeDocument = doc
+                    } label: {
+                        DocumentRowView(
+                            name: doc.title.isEmpty ? (doc.attachmentName ?? "Untitled") : doc.title,
+                            systemImage: doc.systemImage,
+                            subtitle: doc.title.isEmpty ? nil : doc.attachmentName
+                        )
+                    }
+                    .foregroundStyle(.primary)
+                }
+
+                Button {
+                    showingTaskDocumentPicker = true
+                } label: {
+                    Label("Add Document", systemImage: "plus.circle.fill")
+                }
+            } header: {
+                Text("Documents")
+            } footer: {
+                Text("Attach files related to this task.")
+            }
+
+            Section {
                 Toggle("Active", isOn: $task.isActive)
             }
         }
@@ -188,6 +266,21 @@ struct MaintenanceTaskDetailView: View {
         }
         .sheet(item: $productEditorTarget) { target in
             ProductEditorSheet(target: target, attach: { $0.task = task })
+        }
+        .sheet(isPresented: $showingTaskDocumentPicker) {
+            AddDocumentSheet { title, fileName, data, contentType in
+                task.addDocument(name: fileName, data: data, contentType: contentType, title: title)
+            }
+        }
+        .sheet(item: $selectedTaskDocument) { doc in
+            GenericDocumentViewer(name: doc.name, data: doc.data, contentType: doc.contentType)
+        }
+        .sheet(item: $selectedLinkedHomeDocument) { doc in
+            GenericDocumentViewer(
+                name: doc.attachmentName ?? doc.title,
+                data: doc.attachmentData ?? Data(),
+                contentType: doc.attachmentContentType ?? ""
+            )
         }
         .confirmationDialog(
             "Reopen this task?",

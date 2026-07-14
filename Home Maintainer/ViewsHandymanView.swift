@@ -243,6 +243,8 @@ struct ChatView: View {
     @Query private var tasks: [MaintenanceTask]
     @Query private var appliances: [Appliance]
     @Query private var providers: [ServiceProvider]
+    @Query private var allHomeDocuments: [HomeDocument]
+    @Query private var allProjects: [RepairProject]
 
     @Bindable var conversation: ChatConversation
     var scrollToMessageID: UUID? = nil
@@ -393,7 +395,8 @@ struct ChatView: View {
     }
     
     private func loadMessages() {
-        messages = (conversation.messages ?? []).map { savedMessage in
+        let sorted = (conversation.messages ?? []).sorted { $0.timestamp < $1.timestamp }
+        messages = sorted.map { savedMessage in
             let msg = ChatMessage(
                 role: savedMessage.messageRole == .user ? .user : .assistant,
                 content: savedMessage.content,
@@ -700,30 +703,76 @@ struct ChatView: View {
     }
     
     private func buildContext() -> String {
-        var context = ""
-        
-        if !tasks.isEmpty {
-            context += "Tasks: "
-            let taskNames = tasks.prefix(5).map { $0.name }
-            context += taskNames.joined(separator: ", ")
-            context += ". "
+        let homeID = homeManager.currentHome?.id
+        var parts: [String] = []
+
+        // All @Query results are unfiltered; narrow each to the active home
+        let homeTasks = tasks.filter { $0.home?.id == homeID }
+        let homeAppliances = appliances.filter { $0.home?.id == homeID }
+        let homeProviders = providers.filter { $0.home?.id == homeID }
+        let homeDocuments = allHomeDocuments.filter { $0.home?.id == homeID }
+        let homeProjects = allProjects.filter { $0.home?.id == homeID }
+
+        if !homeTasks.isEmpty {
+            let names = homeTasks.prefix(5).map { $0.name }
+            parts.append("Tasks: " + names.joined(separator: ", "))
         }
-        
-        if !appliances.isEmpty {
-            context += "Appliances: "
-            let applianceNames = appliances.prefix(5).map { $0.name }
-            context += applianceNames.joined(separator: ", ")
-            context += ". "
+
+        if !homeAppliances.isEmpty {
+            let names = homeAppliances.prefix(5).map { $0.name }
+            parts.append("Appliances: " + names.joined(separator: ", "))
         }
-        
-        if !providers.isEmpty {
-            context += "Saved Providers: "
-            let providerList = providers.prefix(5).map { "\($0.name) (\($0.category.rawValue))" }
-            context += providerList.joined(separator: ", ")
-            context += "."
+
+        if !homeProviders.isEmpty {
+            let list = homeProviders.prefix(5).map { "\($0.name) (\($0.category.rawValue))" }
+            parts.append("Saved Providers: " + list.joined(separator: ", "))
         }
-        
-        return context
+
+        // Include readable text from documents, capped to avoid oversize prompts
+        var docSnippets: [String] = []
+        var charsUsed = 0
+        let charLimit = 8000
+
+        for appliance in homeAppliances {
+            for doc in appliance.documents ?? [] {
+                guard charsUsed < charLimit else { break }
+                let label = "\(doc.displayName) (\(appliance.name))"
+                if let text = extractDocumentText(data: doc.data, contentType: doc.contentType) {
+                    let snippet = String(text.prefix(charLimit - charsUsed))
+                    docSnippets.append("[\(label)]: \(snippet)")
+                    charsUsed += snippet.count
+                }
+            }
+        }
+
+        for doc in homeDocuments {
+            guard charsUsed < charLimit else { break }
+            guard let data = doc.attachmentData, let ct = doc.attachmentContentType else { continue }
+            let label = doc.title.isEmpty ? (doc.attachmentName ?? "Document") : doc.title
+            if let text = extractDocumentText(data: data, contentType: ct) {
+                let snippet = String(text.prefix(charLimit - charsUsed))
+                docSnippets.append("[\(label)]: \(snippet)")
+                charsUsed += snippet.count
+            }
+        }
+
+        for project in homeProjects {
+            for doc in project.projectDocuments ?? [] {
+                guard charsUsed < charLimit else { break }
+                let label = "\(doc.displayName) (\(project.title))"
+                if let text = extractDocumentText(data: doc.data, contentType: doc.contentType) {
+                    let snippet = String(text.prefix(charLimit - charsUsed))
+                    docSnippets.append("[\(label)]: \(snippet)")
+                    charsUsed += snippet.count
+                }
+            }
+        }
+
+        if !docSnippets.isEmpty {
+            parts.append("Home Documents (text content):\n" + docSnippets.joined(separator: "\n\n"))
+        }
+
+        return parts.joined(separator: ". ")
     }
 }
 

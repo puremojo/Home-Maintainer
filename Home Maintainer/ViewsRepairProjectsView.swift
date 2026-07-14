@@ -11,10 +11,12 @@ import SwiftData
 struct RepairProjectsView: View {
     @Environment(\.modelContext) private var modelContext
     @Environment(HomeManager.self) private var homeManager
+    @Environment(NavigationCoordinator.self) private var coordinator
     @Query private var allProjectsRaw: [RepairProject]
     @State private var showingAddProject = false
     @State private var showingHomePicker = false
     @State private var selectedStatus: ProjectStatus?
+    @State private var navigationTarget: RepairProject? = nil
 
     private var allProjects: [RepairProject] {
         guard let home = homeManager.currentHome else { return [] }
@@ -101,6 +103,11 @@ struct RepairProjectsView: View {
                 }
             }
             .navigationTitle("Repair Projects")
+            .navigationDestination(item: $navigationTarget) { project in
+                RepairProjectDetailView(project: project)
+            }
+            .onAppear { handlePendingNavigation() }
+            .onChange(of: coordinator.pendingProject) { _, _ in handlePendingNavigation() }
             .toolbar {
                 ToolbarItem(placement: .topBarLeading) {
                     HomePickerButton(showingPicker: $showingHomePicker)
@@ -138,6 +145,13 @@ struct RepairProjectsView: View {
         }
     }
     
+    private func handlePendingNavigation() {
+        if let project = coordinator.pendingProject {
+            navigationTarget = project
+            coordinator.pendingProject = nil
+        }
+    }
+
     private func deleteProjects(at offsets: IndexSet, from projectList: [RepairProject]) {
         for index in offsets {
             modelContext.delete(projectList[index])

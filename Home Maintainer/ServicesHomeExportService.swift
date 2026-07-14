@@ -16,6 +16,32 @@ struct HomeExportData: Codable {
     let appliances: [ApplianceSnapshot]
     let serviceProviders: [ProviderSnapshot]
     let projects: [ProjectSnapshot]
+    let documentSections: [DocumentSectionSnapshot]
+
+    init(version: Int, exportedAt: Date, home: HomeSnapshot, tasks: [TaskSnapshot],
+         appliances: [ApplianceSnapshot], serviceProviders: [ProviderSnapshot],
+         projects: [ProjectSnapshot], documentSections: [DocumentSectionSnapshot] = []) {
+        self.version = version
+        self.exportedAt = exportedAt
+        self.home = home
+        self.tasks = tasks
+        self.appliances = appliances
+        self.serviceProviders = serviceProviders
+        self.projects = projects
+        self.documentSections = documentSections
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        version = try container.decode(Int.self, forKey: .version)
+        exportedAt = try container.decode(Date.self, forKey: .exportedAt)
+        home = try container.decode(HomeSnapshot.self, forKey: .home)
+        tasks = try container.decode([TaskSnapshot].self, forKey: .tasks)
+        appliances = try container.decode([ApplianceSnapshot].self, forKey: .appliances)
+        serviceProviders = try container.decode([ProviderSnapshot].self, forKey: .serviceProviders)
+        projects = try container.decode([ProjectSnapshot].self, forKey: .projects)
+        documentSections = (try? container.decode([DocumentSectionSnapshot].self, forKey: .documentSections)) ?? []
+    }
 }
 
 struct HomeSnapshot: Codable {
@@ -70,6 +96,22 @@ struct ProjectSnapshot: Codable {
     let priority: ProjectPriority
     let notes: String
     let createdAt: Date
+}
+
+struct DocumentSectionSnapshot: Codable {
+    let name: String
+    let sortOrder: Int
+    let createdAt: Date
+    let documents: [HomeDocumentSnapshot]
+}
+
+struct HomeDocumentSnapshot: Codable {
+    let title: String
+    let attachmentData: Data?
+    let attachmentName: String?
+    let attachmentContentType: String?
+    let createdAt: Date
+    // linkedTaskIDs and linkedAppliance are not exported — UUIDs differ per device
 }
 
 // MARK: - Service
@@ -137,7 +179,27 @@ enum HomeExportService {
                     notes: project.notes,
                     createdAt: project.createdAt
                 )
-            }
+            },
+            documentSections: (home.documentSections ?? [])
+                .sorted(by: { $0.createdAt < $1.createdAt })
+                .map { section in
+                    DocumentSectionSnapshot(
+                        name: section.name,
+                        sortOrder: section.sortOrder,
+                        createdAt: section.createdAt,
+                        documents: (section.documents ?? [])
+                            .sorted(by: { $0.createdAt < $1.createdAt })
+                            .map { doc in
+                                HomeDocumentSnapshot(
+                                    title: doc.title,
+                                    attachmentData: doc.attachmentData,
+                                    attachmentName: doc.attachmentName,
+                                    attachmentContentType: doc.attachmentContentType,
+                                    createdAt: doc.createdAt
+                                )
+                            }
+                    )
+                }
         )
 
         let encoder = JSONEncoder()
@@ -219,6 +281,22 @@ enum HomeExportService {
             project.notes = proj.notes
             project.home = home
             context.insert(project)
+        }
+
+        for (i, sec) in snapshot.documentSections.enumerated() {
+            let section = DocumentSection(name: sec.name, sortOrder: i)
+            section.home = home
+            context.insert(section)
+
+            for docSnap in sec.documents {
+                let doc = HomeDocument(title: docSnap.title)
+                doc.attachmentData = docSnap.attachmentData
+                doc.attachmentName = docSnap.attachmentName
+                doc.attachmentContentType = docSnap.attachmentContentType
+                doc.section = section
+                doc.home = home
+                context.insert(doc)
+            }
         }
 
         try context.save()
