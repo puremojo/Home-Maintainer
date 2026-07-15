@@ -29,6 +29,10 @@ final class RepairProject {
     var projectDocuments: [ProjectDocument]?
     var createdAt: Date
     var home: Home?
+    @Relationship(deleteRule: .cascade, inverse: \MaintenanceTask.sourceProject)
+    var subTasks: [MaintenanceTask]?
+    var workDates: [ProjectWorkDate]?
+    var totalCost: Double?
 
     init(title: String, description: String, category: ServiceCategory, priority: ProjectPriority = .medium) {
         self.id = UUID()
@@ -54,6 +58,16 @@ final class RepairProject {
     
     var totalQuotedAmount: Double {
         quotes?.reduce(0) { $0 + $1.amount } ?? 0
+    }
+
+    func addWorkDate(label: String, scheduledDate: Date, durationDays: Int = 0, durationMinutes: Int = 0) {
+        let workDate = ProjectWorkDate(label: label, scheduledDate: scheduledDate, durationDays: durationDays, durationMinutes: durationMinutes)
+        if workDates == nil { workDates = [] }
+        workDates?.append(workDate)
+    }
+
+    func removeWorkDate(_ workDate: ProjectWorkDate) {
+        workDates?.removeAll { $0.id == workDate.id }
     }
 }
 
@@ -212,6 +226,48 @@ struct ProjectDocument: Codable, Identifiable {
         case "txt": return "doc.plaintext.fill"
         default: return "doc.fill"
         }
+    }
+}
+
+struct ProjectWorkDate: Codable, Identifiable {
+    let id: UUID
+    var label: String
+    var scheduledDate: Date
+    var durationDays: Int    // multi-day projects (e.g. pool removal)
+    var durationMinutes: Int // hours + minutes encoded as total minutes
+
+    enum CodingKeys: String, CodingKey {
+        case id, label, scheduledDate, durationDays, durationMinutes
+    }
+
+    init(label: String = "", scheduledDate: Date = Date(), durationDays: Int = 0, durationMinutes: Int = 0) {
+        self.id = UUID()
+        self.label = label
+        self.scheduledDate = scheduledDate
+        self.durationDays = durationDays
+        self.durationMinutes = durationMinutes
+    }
+
+    // Backward-compat: old records lack durationDays
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        id = try c.decode(UUID.self, forKey: .id)
+        label = try c.decode(String.self, forKey: .label)
+        scheduledDate = try c.decode(Date.self, forKey: .scheduledDate)
+        durationDays = (try? c.decode(Int.self, forKey: .durationDays)) ?? 0
+        durationMinutes = try c.decode(Int.self, forKey: .durationMinutes)
+    }
+
+    var formattedDuration: String? {
+        let hours = durationMinutes / 60
+        let mins = durationMinutes % 60
+        guard durationDays > 0 || hours > 0 || mins > 0 else { return nil }
+
+        var parts: [String] = []
+        if durationDays > 0 { parts.append("\(durationDays)d") }
+        if hours > 0 { parts.append("\(hours)h") }
+        if mins > 0 { parts.append("\(mins)m") }
+        return parts.joined(separator: " ")
     }
 }
 

@@ -7,6 +7,7 @@
 
 import Foundation
 import SwiftData
+import SwiftUI
 
 @Model
 final class MaintenanceTask {
@@ -25,6 +26,7 @@ final class MaintenanceTask {
     var taskDocuments: [TaskDocument]?
     var createdAt: Date
     var home: Home?
+    var sourceProject: RepairProject?
     
     init(name: String, description: String, frequency: TaskFrequency, appliance: Appliance? = nil, room: String = "") {
         self.id = UUID()
@@ -53,6 +55,12 @@ final class MaintenanceTask {
     func markCompleted(on date: Date = Date()) {
         self.lastCompleted = date
         self.nextDue = calculateNextDue(from: date, frequency: frequency)
+    }
+
+    func reopen() {
+        self.isActive = true
+        self.lastCompleted = nil
+        self.updateFrequency(self.frequency)
     }
 
     /// Updates the frequency and recomputes the next due date based on the new
@@ -119,7 +127,7 @@ enum TaskFrequency: Codable, Hashable, Equatable {
     
     var displayName: String {
         switch self {
-        case .once: return "Once"
+        case .once: return "Never"
         case .daily: return "Daily"
         case .weekly: return "Weekly"
         case .biweekly: return "Every 2 Weeks"
@@ -150,7 +158,16 @@ final class MaintenanceRecord {
 }
 enum TaskAction: String, Codable {
     case closed = "Closed"
+    case occurrenceClosed = "Occurrence Closed"
     case reopened = "Reopened"
+
+    var badgeColor: Color {
+        switch self {
+        case .closed: return .green
+        case .occurrenceClosed: return .blue
+        case .reopened: return .orange
+        }
+    }
 }
 
 struct TaskDocument: Codable, Identifiable {

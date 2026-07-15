@@ -17,14 +17,27 @@ struct MaintenanceTasksView: View {
     @State private var showingAddTask = false
     @State private var showingHomePicker = false
     @AppStorage("taskSortOption") private var sortOption: TaskSortOption = .upNext
-
-    private var tasks: [MaintenanceTask] {
+    private var homeTasks: [MaintenanceTask] {
         guard let home = homeManager.currentHome else { return [] }
         return allTasks.filter { $0.home?.id == home.id }
     }
 
+    // Regular maintenance tasks (not from projects)
+    private var tasks: [MaintenanceTask] {
+        homeTasks.filter { $0.sourceProject == nil }
+    }
+
+    // Project sub-tasks only
+    private var projectSubTasks: [MaintenanceTask] {
+        homeTasks.filter { $0.sourceProject != nil }
+    }
+
     var activeTasks: [MaintenanceTask] {
         tasks.filter { $0.isActive }
+    }
+
+    var closedTasks: [MaintenanceTask] {
+        tasks.filter { !$0.isActive }.sorted { $0.name < $1.name }
     }
 
     var overdueTasks: [MaintenanceTask] {
@@ -35,8 +48,6 @@ struct MaintenanceTasksView: View {
         activeTasks.filter { !$0.isOverdue }
     }
 
-    /// Tasks grouped into sections by room, with empty rooms gathered under
-    /// "No Room" and shown last.
     var tasksByRoom: [(room: String, tasks: [MaintenanceTask])] {
         let groups = Dictionary(grouping: activeTasks) { task in
             task.room.trimmingCharacters(in: .whitespaces).isEmpty ? "No Room" : task.room
@@ -50,13 +61,24 @@ struct MaintenanceTasksView: View {
             }
     }
 
-    /// Tasks grouped into sections by frequency, ordered from most to least
-    /// frequent.
     var tasksByFrequency: [(frequency: TaskFrequency, tasks: [MaintenanceTask])] {
         let groups = Dictionary(grouping: activeTasks) { $0.frequency }
         return groups
             .map { (frequency: $0.key, tasks: $0.value.sorted { ($0.nextDue ?? .distantFuture) < ($1.nextDue ?? .distantFuture) }) }
             .sorted { $0.frequency.sortOrder < $1.frequency.sortOrder }
+    }
+
+    var projectSubTasksByProject: [(projectTitle: String, tasks: [MaintenanceTask])] {
+        let groups = Dictionary(grouping: projectSubTasks) { task in
+            task.sourceProject?.title ?? "Unknown Project"
+        }
+        return groups
+            .map { (projectTitle: $0.key, tasks: $0.value.sorted { $0.name < $1.name }) }
+            .sorted { $0.projectTitle.localizedCaseInsensitiveCompare($1.projectTitle) == .orderedAscending }
+    }
+
+    private var navTitle: String {
+        sortOption == .fromProjects ? "Project Sub Tasks" : "Maintenance Tasks"
     }
 
     var body: some View {
@@ -68,7 +90,7 @@ struct MaintenanceTasksView: View {
                     taskList
                 }
             }
-            .navigationTitle("Maintenance Tasks")
+            .navigationTitle(navTitle)
             .toolbar {
                 ToolbarItem(placement: .topBarLeading) {
                     HomePickerButton(showingPicker: $showingHomePicker)
@@ -90,7 +112,7 @@ struct MaintenanceTasksView: View {
                     } label: {
                         Label("Add Task", systemImage: "plus")
                     }
-                    .disabled(homeManager.currentHome == nil)
+                    .disabled(homeManager.currentHome == nil || sortOption == .fromProjects)
                 }
             }
             .navigationDestination(item: $navigationTarget) { task in
@@ -130,18 +152,41 @@ struct MaintenanceTasksView: View {
             switch sortOption {
             case .upNext:
                 upNextSections
+                if activeTasks.isEmpty && closedTasks.isEmpty {
+                    ContentUnavailableView(
+                        "No Tasks",
+                        systemImage: "checklist",
+                        description: Text("Add your first maintenance task to get started")
+                    )
+                }
+                closedTasksSection
             case .room:
                 roomSections
+                closedTasksSection
             case .frequency:
                 frequencySections
+                closedTasksSection
+            case .fromProjects:
+                fromProjectsSections
+                if projectSubTasks.isEmpty {
+                    ContentUnavailableView(
+                        "No Project Sub Tasks",
+                        systemImage: "checklist.checked",
+                        description: Text("There are no project sub tasks created")
+                    )
+                }
             }
+        }
+    }
 
-            if activeTasks.isEmpty {
-                ContentUnavailableView(
-                    "No Tasks",
-                    systemImage: "checklist",
-                    description: Text("Add your first maintenance task to get started")
-                )
+    @ViewBuilder
+    private var closedTasksSection: some View {
+        if !closedTasks.isEmpty {
+            Section {
+                NavigationLink(destination: ClosedTasksView(tasks: closedTasks)) {
+                    Label("Closed Tasks (\(closedTasks.count))", systemImage: "archivebox")
+                        .foregroundStyle(.secondary)
+                }
             }
         }
     }
@@ -187,6 +232,19 @@ struct MaintenanceTasksView: View {
         }
     }
 
+    @ViewBuilder
+    private var fromProjectsSections: some View {
+        ForEach(projectSubTasksByProject, id: \.projectTitle) { group in
+            Section(group.projectTitle) {
+                ForEach(group.tasks) { task in
+                    NavigationLink(destination: MaintenanceTaskDetailView(task: task)) {
+                        ProjectSubTaskRow(task: task)
+                    }
+                }
+            }
+        }
+    }
+
     private func taskLink(_ task: MaintenanceTask) -> some View {
         NavigationLink(destination: MaintenanceTaskDetailView(task: task)) {
             TaskRow(task: task)
@@ -198,6 +256,7 @@ enum TaskSortOption: String, CaseIterable, Identifiable {
     case upNext = "Up Next"
     case room = "Room"
     case frequency = "Frequency"
+    case fromProjects = "From Projects"
 
     var id: String { rawValue }
 
@@ -206,12 +265,12 @@ enum TaskSortOption: String, CaseIterable, Identifiable {
         case .upNext: return "calendar"
         case .room: return "door.left.hand.open"
         case .frequency: return "repeat"
+        case .fromProjects: return "hammer"
         }
     }
 }
 
 extension TaskFrequency {
-    /// Relative ordering used when sorting frequency groups (most frequent first).
     var sortOrder: Int {
         switch self {
         case .once: return 0
@@ -229,59 +288,115 @@ extension TaskFrequency {
 
 struct TaskRow: View {
     let task: MaintenanceTask
-    
-    // Check if task is completed and not yet due again
+
     var isCompletedForCurrentCycle: Bool {
-        guard let lastCompleted = task.lastCompleted,
-              let nextDue = task.nextDue else {
-            return false
-        }
-        
-        // If we've completed it and the next due date hasn't passed yet
+        guard let _ = task.lastCompleted, let nextDue = task.nextDue else { return false }
         return nextDue > Date()
     }
-    
+
     var body: some View {
         VStack(alignment: .leading, spacing: 4) {
             HStack {
                 Text(task.name)
                     .font(.headline)
-                    .strikethrough(isCompletedForCurrentCycle, color: .gray)
-                    .foregroundStyle(isCompletedForCurrentCycle ? .secondary : .primary)
-                
+
                 if isCompletedForCurrentCycle {
                     Image(systemName: "checkmark.circle.fill")
                         .font(.caption)
                         .foregroundStyle(.green)
                 }
             }
-            
+
             HStack {
                 Text(task.frequency.displayName)
                     .font(.caption)
                     .foregroundStyle(.secondary)
-                
+
                 if let nextDue = task.nextDue {
                     Text("•")
                         .font(.caption)
                         .foregroundStyle(.secondary)
-                    
+
                     Text("Due \(nextDue, format: .dateTime.month().day())")
                         .font(.caption)
                         .foregroundStyle(task.isOverdue ? .red : .secondary)
                 }
-                
+
                 if let lastCompleted = task.lastCompleted, isCompletedForCurrentCycle {
                     Text("•")
                         .font(.caption)
                         .foregroundStyle(.secondary)
-                    
+
                     Text("Done \(lastCompleted, format: .dateTime.month().day())")
                         .font(.caption)
                         .foregroundStyle(.green)
                 }
             }
         }
+    }
+}
+
+// Row used in the "From Projects" sort view — strikes through when closed
+struct ProjectSubTaskRow: View {
+    let task: MaintenanceTask
+
+    var isDone: Bool { task.lastCompleted != nil }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            HStack {
+                Text(task.name)
+                    .font(.headline)
+                    .strikethrough(isDone, color: .gray)
+                    .foregroundStyle(isDone ? .secondary : .primary)
+
+                if isDone {
+                    Image(systemName: "checkmark.circle.fill")
+                        .font(.caption)
+                        .foregroundStyle(.green)
+                }
+            }
+
+            if !task.taskDescription.isEmpty {
+                Text(task.taskDescription)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(2)
+            }
+
+            if let lastCompleted = task.lastCompleted {
+                Text("Closed \(lastCompleted, format: .dateTime.month().day().year())")
+                    .font(.caption)
+                    .foregroundStyle(.green)
+            }
+        }
+    }
+}
+
+struct ClosedTasksView: View {
+    let tasks: [MaintenanceTask]
+
+    var body: some View {
+        List {
+            ForEach(tasks) { task in
+                NavigationLink(destination: MaintenanceTaskDetailView(task: task)) {
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text(task.name)
+                            .font(.headline)
+                            .strikethrough(true, color: .gray)
+                            .foregroundStyle(.secondary)
+
+                        if let lastCompleted = task.lastCompleted {
+                            Text("Closed \(lastCompleted, format: .dateTime.month().day().year())")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                        }
+                    }
+                }
+            }
+        }
+        .navigationTitle("Closed Tasks")
+        .navigationBarTitleDisplayMode(.inline)
     }
 }
 

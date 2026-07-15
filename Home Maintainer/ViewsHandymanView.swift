@@ -502,7 +502,10 @@ struct ChatView: View {
 
         case "create_repair_project":
             return await createRepairProject(from: arguments)
-            
+
+        case "create_project_subtask":
+            return await createProjectSubTask(from: arguments)
+
         default:
             return "Unknown function: \(functionName)"
         }
@@ -701,7 +704,30 @@ struct ChatView: View {
 
         return "✅ Created project: \(params.title)"
     }
-    
+
+    private func createProjectSubTask(from jsonString: String) async -> String {
+        guard let data = jsonString.data(using: .utf8),
+              let params = try? JSONDecoder().decode(ProjectSubTaskParams.self, from: data) else {
+            return "Failed to parse sub-task parameters"
+        }
+
+        let result: String = await MainActor.run {
+            let homeID = homeManager.currentHome?.id
+            guard let project = allProjects.first(where: {
+                $0.home?.id == homeID && $0.title.localizedCaseInsensitiveContains(params.projectTitle)
+            }) else {
+                return "Could not find project '\(params.projectTitle)' for this home"
+            }
+
+            let task = MaintenanceTask(name: params.name, description: params.description, frequency: .once)
+            task.home = homeManager.currentHome
+            task.sourceProject = project
+            modelContext.insert(task)
+            return "✅ Added sub-task '\(params.name)' to project '\(project.title)'"
+        }
+        return result
+    }
+
     private func buildContext() -> String {
         let homeID = homeManager.currentHome?.id
         var parts: [String] = []
@@ -713,9 +739,10 @@ struct ChatView: View {
         let homeDocuments = allHomeDocuments.filter { $0.home?.id == homeID }
         let homeProjects = allProjects.filter { $0.home?.id == homeID }
 
-        if !homeTasks.isEmpty {
-            let names = homeTasks.prefix(5).map { $0.name }
-            parts.append("Tasks: " + names.joined(separator: ", "))
+        let regularTasks = homeTasks.filter { $0.sourceProject == nil }
+        if !regularTasks.isEmpty {
+            let names = regularTasks.prefix(5).map { $0.name }
+            parts.append("Maintenance Tasks: " + names.joined(separator: ", "))
         }
 
         if !homeAppliances.isEmpty {
@@ -726,6 +753,36 @@ struct ChatView: View {
         if !homeProviders.isEmpty {
             let list = homeProviders.prefix(5).map { "\($0.name) (\($0.category.rawValue))" }
             parts.append("Saved Providers: " + list.joined(separator: ", "))
+        }
+
+        if !homeProjects.isEmpty {
+            let projectInfo = homeProjects.prefix(10).map { project -> String in
+                var info = "\(project.title) [Status: \(project.status.rawValue), Priority: \(project.priority.displayName)]"
+                if !project.projectDescription.isEmpty {
+                    info += " — \(project.projectDescription)"
+                }
+                if let cost = project.totalCost {
+                    info += " — Total cost: \(cost.formatted(.currency(code: "USD")))"
+                }
+                let subTasks = project.subTasks ?? []
+                if !subTasks.isEmpty {
+                    let subTaskList = subTasks.map { task -> String in
+                        let done = task.lastCompleted != nil ? " (done)" : ""
+                        return task.name + done
+                    }.joined(separator: ", ")
+                    info += " | Sub-tasks: \(subTaskList)"
+                }
+                let workDates = project.workDates ?? []
+                if !workDates.isEmpty {
+                    let dateList = workDates.prefix(3).map { wd -> String in
+                        let label = wd.label.isEmpty ? "Work date" : wd.label
+                        return "\(label): \(wd.scheduledDate.formatted(.dateTime.month().day().year().hour().minute()))"
+                    }.joined(separator: "; ")
+                    info += " | Scheduled dates: \(dateList)"
+                }
+                return info
+            }
+            parts.append("Repair Projects:\n" + projectInfo.joined(separator: "\n"))
         }
 
         // Include readable text from documents, capped to avoid oversize prompts
@@ -884,6 +941,12 @@ private struct RepairProjectParams: Codable {
     let description: String
     let category: String
     let priority: String?
+}
+
+private struct ProjectSubTaskParams: Codable {
+    let projectTitle: String
+    let name: String
+    let description: String
 }
 
 // MARK: - Image Pickers

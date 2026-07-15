@@ -10,11 +10,12 @@ import SwiftData
 
 struct MaintenanceTaskDetailView: View {
     @Environment(\.modelContext) private var modelContext
+    @Environment(NavigationCoordinator.self) private var coordinator
     @Query private var allAppliances: [Appliance]
     @Query private var allHomeDocuments: [HomeDocument]
     @Bindable var task: MaintenanceTask
-    @State private var showingCompleteSheet = false
-    @State private var showingReopenConfirmation = false
+    @State private var showingCloseSheet = false
+    @State private var showingCloseOccurrenceSheet = false
     @State private var showingAppliancePicker = false
     @State private var showingEditTask = false
     @State private var editingRecord: MaintenanceRecord?
@@ -23,240 +24,49 @@ struct MaintenanceTaskDetailView: View {
     @State private var selectedTaskDocument: TaskDocument?
     @State private var selectedLinkedHomeDocument: HomeDocument?
 
+    private var isProjectSubTask: Bool { task.sourceProject != nil }
+
+    private var isRepeating: Bool {
+        if case .once = task.frequency { return false }
+        return true
+    }
+
     private var linkedHomeDocuments: [HomeDocument] {
         allHomeDocuments
             .filter { $0.linkedTaskIDs.contains(task.id) }
             .sorted { $0.createdAt < $1.createdAt }
     }
-    
-    // Check if task is completed and not yet due again
+
     var isCompletedForCurrentCycle: Bool {
-        guard let lastCompleted = task.lastCompleted,
-              let nextDue = task.nextDue else {
-            return false
-        }
-        
-        // If we've completed it and the next due date hasn't passed yet
+        guard let _ = task.lastCompleted, let nextDue = task.nextDue else { return false }
         return nextDue > Date()
     }
-    
+
     var body: some View {
         List {
-            Section("Details") {
-                LabeledContent("Name", value: task.name)
-                LabeledContent("Description", value: task.taskDescription)
-                if !task.room.isEmpty {
-                    LabeledContent("Room", value: task.room)
-                }
-                LabeledContent("Frequency", value: task.frequency.displayName)
-                
-                // Appliance link - editable
-                LabeledContent("Linked Appliance") {
-                    if let appliance = task.appliance {
-                        Button {
-                            showingAppliancePicker = true
-                        } label: {
-                            HStack {
-                                ApplianceIconView(appliance: appliance, size: 30)
-                                Text(appliance.name)
-                                Spacer()
-                                Image(systemName: "chevron.right")
-                                    .font(.caption)
-                                    .foregroundStyle(.secondary)
-                            }
-                        }
-                    } else {
-                        Button {
-                            showingAppliancePicker = true
-                        } label: {
-                            HStack {
-                                Text("None")
-                                    .foregroundStyle(.secondary)
-                                Spacer()
-                                Image(systemName: "chevron.right")
-                                    .font(.caption)
-                                    .foregroundStyle(.secondary)
-                            }
-                        }
-                    }
-                }
-                
-                if let lastCompleted = task.lastCompleted {
-                    LabeledContent("Last Closed") {
-                        Text(lastCompleted, format: .dateTime.month().day().year())
-                    }
-                }
-                
-                if let nextDue = task.nextDue {
-                    LabeledContent("Next Due") {
-                        Text(nextDue, format: .dateTime.month().day().year())
-                            .foregroundStyle(task.isOverdue ? .red : .primary)
-                    }
-                }
-                
-                if isCompletedForCurrentCycle {
-                    LabeledContent("Status") {
-                        HStack {
-                            Image(systemName: "checkmark.circle.fill")
-                                .foregroundStyle(.green)
-                            Text("Closed")
-                                .foregroundStyle(.green)
-                        }
-                    }
-                }
-            }
-            
-            Section {
-                if isCompletedForCurrentCycle {
-                    Button(role: .destructive) {
-                        showingReopenConfirmation = true
-                    } label: {
-                        Label("Mark as Open", systemImage: "arrow.uturn.backward.circle")
-                    }
-                } else {
-                    Button {
-                        showingCompleteSheet = true
-                    } label: {
-                        Label("Mark as Closed", systemImage: "checkmark.circle")
-                    }
-                }
-            }
-            
-            if let records = task.records, !records.isEmpty {
-                Section("History") {
-                    ForEach(records.sorted(by: { $0.completedDate > $1.completedDate })) { record in
-                        Button {
-                            editingRecord = record
-                        } label: {
-                            VStack(alignment: .leading, spacing: 4) {
-                                HStack {
-                                    Text(record.completedDate, format: .dateTime.month().day().year().hour().minute())
-                                        .font(.subheadline)
-                                        .foregroundStyle(.primary)
-                                    
-                                    Spacer()
-                                    
-                                    Text(record.action.rawValue)
-                                        .font(.caption)
-                                        .fontWeight(.semibold)
-                                        .foregroundStyle(record.action == .closed ? .green : .orange)
-                                        .padding(.horizontal, 8)
-                                        .padding(.vertical, 2)
-                                        .background(
-                                            Capsule()
-                                                .fill(record.action == .closed ? Color.green.opacity(0.15) : Color.orange.opacity(0.15))
-                                        )
-                                }
-                                
-                                if !record.notes.isEmpty {
-                                    LinkedText(text: record.notes)
-                                        .font(.caption)
-                                        .foregroundStyle(.secondary)
-                                } else {
-                                    Text("Tap to add notes")
-                                        .font(.caption)
-                                        .foregroundStyle(.tertiary)
-                                        .italic()
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-            
-            LiveProductsSection(
-                products: task.products ?? [],
-                detach: { $0.task = nil },
-                onAdd: { productEditorTarget = .add },
-                onEdit: { productEditorTarget = .edit($0) }
-            )
-
-            Section {
-                ForEach(task.taskDocuments ?? []) { document in
-                    Button {
-                        selectedTaskDocument = document
-                    } label: {
-                        HStack {
-                            Image(systemName: document.systemImage)
-                                .foregroundStyle(.blue)
-                            VStack(alignment: .leading, spacing: 2) {
-                                Text(document.displayName)
-                                    .font(.subheadline)
-                                    .foregroundStyle(.primary)
-                                HStack {
-                                    Text(document.fileExtension.uppercased())
-                                        .font(.caption2)
-                                        .foregroundStyle(.secondary)
-                                    Text("•")
-                                        .font(.caption2)
-                                        .foregroundStyle(.secondary)
-                                    Text(document.dateAdded, format: .dateTime.month().day().year())
-                                        .font(.caption2)
-                                        .foregroundStyle(.secondary)
-                                    Text("•")
-                                        .font(.caption2)
-                                        .foregroundStyle(.secondary)
-                                    Text(ByteCountFormatter.string(fromByteCount: Int64(document.data.count), countStyle: .file))
-                                        .font(.caption2)
-                                        .foregroundStyle(.secondary)
-                                }
-                            }
-                            Spacer()
-                            Image(systemName: "chevron.right")
-                                .font(.caption)
-                                .foregroundStyle(.secondary)
-                        }
-                    }
-                }
-                .onDelete { offsets in
-                    let docs = task.taskDocuments ?? []
-                    for index in offsets {
-                        task.removeDocument(docs[index])
-                    }
-                }
-
-                ForEach(linkedHomeDocuments) { doc in
-                    Button {
-                        selectedLinkedHomeDocument = doc
-                    } label: {
-                        DocumentRowView(
-                            name: doc.title.isEmpty ? (doc.attachmentName ?? "Untitled") : doc.title,
-                            systemImage: doc.systemImage,
-                            subtitle: doc.title.isEmpty ? nil : doc.attachmentName
-                        )
-                    }
-                    .foregroundStyle(.primary)
-                }
-
-                Button {
-                    showingTaskDocumentPicker = true
-                } label: {
-                    Label("Add Document", systemImage: "plus.circle.fill")
-                }
-            } header: {
-                Text("Documents")
-            } footer: {
-                Text("Attach files related to this task.")
-            }
-
-            Section {
-                Toggle("Active", isOn: $task.isActive)
+            if isProjectSubTask {
+                subTaskSections
+            } else {
+                maintenanceTaskSections
             }
         }
         .navigationTitle(task.name)
         .navigationBarTitleDisplayMode(.inline)
         .toolbar {
-            ToolbarItem(placement: .primaryAction) {
-                Button("Edit") {
-                    showingEditTask = true
+            if !isProjectSubTask {
+                ToolbarItem(placement: .primaryAction) {
+                    Button("Edit") { showingEditTask = true }
                 }
             }
         }
         .sheet(isPresented: $showingEditTask) {
             EditMaintenanceTaskView(task: task)
         }
-        .sheet(isPresented: $showingCompleteSheet) {
-            CompleteTaskView(task: task)
+        .sheet(isPresented: $showingCloseSheet) {
+            CloseTaskSheet(task: task, isPermanent: true, modelContext: modelContext)
+        }
+        .sheet(isPresented: $showingCloseOccurrenceSheet) {
+            CloseTaskSheet(task: task, isPermanent: false, modelContext: modelContext)
         }
         .sheet(isPresented: $showingAppliancePicker) {
             SelectApplianceView(task: task, allAppliances: allAppliances)
@@ -282,93 +92,320 @@ struct MaintenanceTaskDetailView: View {
                 contentType: doc.attachmentContentType ?? ""
             )
         }
-        .confirmationDialog(
-            "Reopen this task?",
-            isPresented: $showingReopenConfirmation
-        ) {
-            Button("Mark as Open", role: .destructive) {
-                reopenTask()
+    }
+
+    // MARK: - Sub-task view (name, description, products only)
+
+    @ViewBuilder
+    private var subTaskSections: some View {
+        Section("Details") {
+            LabeledContent("Name", value: task.name)
+            if !task.taskDescription.isEmpty {
+                LabeledContent("Description", value: task.taskDescription)
             }
-            Button("Cancel", role: .cancel) { }
-        } message: {
-            Text("This will mark the task as needing to be completed again.")
+        }
+
+        LiveProductsSection(
+            products: task.products ?? [],
+            detach: { $0.task = nil },
+            onAdd: { productEditorTarget = .add },
+            onEdit: { productEditorTarget = .edit($0) }
+        )
+
+        Section {
+            let isDone = task.lastCompleted != nil
+            if isDone {
+                Button {
+                    task.lastCompleted = nil
+                } label: {
+                    Label("Reopen Task", systemImage: "arrow.uturn.backward.circle")
+                }
+            } else {
+                Button {
+                    task.lastCompleted = Date()
+                } label: {
+                    Label("Close Task", systemImage: "checkmark.circle")
+                }
+            }
+        }
+
+        if let project = task.sourceProject {
+            Section {
+                Button {
+                    coordinator.pendingProject = project
+                    coordinator.selectedTab = "projects"
+                } label: {
+                    Label("Take me to this project", systemImage: "arrow.right.circle")
+                }
+            } header: {
+                Text("Source Project: \(project.title)")
+            }
         }
     }
-    
-    private func reopenTask() {
-        // Create a "reopened" record
-        let record = MaintenanceRecord(
-            task: task,
-            completedDate: Date(),
-            notes: "Task reopened",
-            action: .reopened
-        )
-        modelContext.insert(record)
-        
-        // Set the next due date to today (or keep it if already overdue)
-        if let nextDue = task.nextDue, nextDue > Date() {
-            task.nextDue = Date()
+
+    // MARK: - Regular maintenance task view
+
+    @ViewBuilder
+    private var maintenanceTaskSections: some View {
+        Section("Details") {
+            LabeledContent("Name", value: task.name)
+            LabeledContent("Description", value: task.taskDescription)
+            if !task.room.isEmpty {
+                LabeledContent("Room", value: task.room)
+            }
+            LabeledContent("Frequency", value: task.frequency.displayName)
+
+            LabeledContent("Linked Appliance") {
+                Button {
+                    showingAppliancePicker = true
+                } label: {
+                    HStack {
+                        if let appliance = task.appliance {
+                            ApplianceIconView(appliance: appliance, size: 30)
+                            Text(appliance.name)
+                        } else {
+                            Text("None").foregroundStyle(.secondary)
+                        }
+                        Spacer()
+                        Image(systemName: "chevron.right")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                }
+            }
+
+            if let lastCompleted = task.lastCompleted {
+                LabeledContent("Last Closed") {
+                    Text(lastCompleted, format: .dateTime.month().day().year())
+                }
+            }
+
+            if let nextDue = task.nextDue {
+                LabeledContent("Next Due") {
+                    Text(nextDue, format: .dateTime.month().day().year())
+                        .foregroundStyle(task.isOverdue ? .red : .primary)
+                }
+            }
+
+            if !task.isActive {
+                LabeledContent("Status") {
+                    HStack(spacing: 6) {
+                        Image(systemName: "archivebox.fill").foregroundStyle(.secondary)
+                        Text("Closed Task").foregroundStyle(.secondary)
+                    }
+                }
+            } else if isCompletedForCurrentCycle, let lastCompleted = task.lastCompleted, let nextDue = task.nextDue {
+                LabeledContent("Status") {
+                    VStack(alignment: .trailing, spacing: 2) {
+                        HStack(spacing: 6) {
+                            Image(systemName: "checkmark.circle.fill").foregroundStyle(.green)
+                            Text("Occurrence closed \(lastCompleted, format: .dateTime.month().day().year())")
+                                .foregroundStyle(.green)
+                        }
+                        Text("Next due \(nextDue, format: .dateTime.month().day().year())")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                }
+            }
         }
-        // Clear the last completed date to make it appear incomplete
-        task.lastCompleted = nil
+
+        // Action buttons
+        Section {
+            if task.isActive {
+                Button {
+                    showingCloseSheet = true
+                } label: {
+                    Label("Close Task", systemImage: "checkmark.circle")
+                }
+
+                if isRepeating {
+                    Button {
+                        showingCloseOccurrenceSheet = true
+                    } label: {
+                        Label("Close Task Occurrence", systemImage: "checkmark.circle.badge.xmark")
+                    }
+                }
+            } else {
+                Button {
+                    reopenTask()
+                } label: {
+                    Label("Reopen Task", systemImage: "arrow.uturn.backward.circle")
+                }
+            }
+        }
+
+        if let records = task.records, !records.isEmpty {
+            Section("History") {
+                ForEach(records.sorted(by: { $0.completedDate > $1.completedDate })) { record in
+                    Button {
+                        editingRecord = record
+                    } label: {
+                        VStack(alignment: .leading, spacing: 4) {
+                            HStack {
+                                Text(record.completedDate, format: .dateTime.month().day().year().hour().minute())
+                                    .font(.subheadline)
+                                    .foregroundStyle(.primary)
+
+                                Spacer()
+
+                                Text(record.action.rawValue)
+                                    .font(.caption)
+                                    .fontWeight(.semibold)
+                                    .foregroundStyle(record.action.badgeColor)
+                                    .padding(.horizontal, 8)
+                                    .padding(.vertical, 2)
+                                    .background(
+                                        Capsule()
+                                            .fill(record.action.badgeColor.opacity(0.15))
+                                    )
+                            }
+
+                            if !record.notes.isEmpty {
+                                LinkedText(text: record.notes)
+                                    .font(.caption)
+                                    .foregroundStyle(.secondary)
+                            } else {
+                                Text("Tap to add notes")
+                                    .font(.caption)
+                                    .foregroundStyle(.tertiary)
+                                    .italic()
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        LiveProductsSection(
+            products: task.products ?? [],
+            detach: { $0.task = nil },
+            onAdd: { productEditorTarget = .add },
+            onEdit: { productEditorTarget = .edit($0) }
+        )
+
+        Section {
+            ForEach(task.taskDocuments ?? []) { document in
+                Button {
+                    selectedTaskDocument = document
+                } label: {
+                    HStack {
+                        Image(systemName: document.systemImage).foregroundStyle(.blue)
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text(document.displayName)
+                                .font(.subheadline)
+                                .foregroundStyle(.primary)
+                            HStack {
+                                Text(document.fileExtension.uppercased())
+                                    .font(.caption2).foregroundStyle(.secondary)
+                                Text("•").font(.caption2).foregroundStyle(.secondary)
+                                Text(document.dateAdded, format: .dateTime.month().day().year())
+                                    .font(.caption2).foregroundStyle(.secondary)
+                                Text("•").font(.caption2).foregroundStyle(.secondary)
+                                Text(ByteCountFormatter.string(fromByteCount: Int64(document.data.count), countStyle: .file))
+                                    .font(.caption2).foregroundStyle(.secondary)
+                            }
+                        }
+                        Spacer()
+                        Image(systemName: "chevron.right").font(.caption).foregroundStyle(.secondary)
+                    }
+                }
+            }
+            .onDelete { offsets in
+                let docs = task.taskDocuments ?? []
+                for index in offsets { task.removeDocument(docs[index]) }
+            }
+
+            ForEach(linkedHomeDocuments) { doc in
+                Button {
+                    selectedLinkedHomeDocument = doc
+                } label: {
+                    DocumentRowView(
+                        name: doc.title.isEmpty ? (doc.attachmentName ?? "Untitled") : doc.title,
+                        systemImage: doc.systemImage,
+                        subtitle: doc.title.isEmpty ? nil : doc.attachmentName
+                    )
+                }
+                .foregroundStyle(.primary)
+            }
+
+            Button {
+                showingTaskDocumentPicker = true
+            } label: {
+                Label("Add Document", systemImage: "plus.circle.fill")
+            }
+        } header: {
+            Text("Documents")
+        } footer: {
+            Text("Attach files related to this task.")
+        }
+
+        Section {
+            Toggle("Active", isOn: $task.isActive)
+        }
+    }
+
+    private func reopenTask() {
+        task.reopen()
+        let record = MaintenanceRecord(task: task, completedDate: Date(), notes: "Task reopened", action: .reopened)
+        modelContext.insert(record)
     }
 }
 
-struct CompleteTaskView: View {
-    @Environment(\.modelContext) private var modelContext
+// MARK: - Close Task Sheet (handles both permanent close and occurrence close)
+
+struct CloseTaskSheet: View {
     @Environment(\.dismiss) private var dismiss
     let task: MaintenanceTask
-    
+    let isPermanent: Bool
+    let modelContext: ModelContext
+
     @State private var completionDate = Date()
     @State private var notes = ""
-    
+
     var body: some View {
         NavigationStack {
             Form {
                 Section {
-                    DatePicker("Completion Date", selection: $completionDate, displayedComponents: [.date, .hourAndMinute])
+                    DatePicker("Date", selection: $completionDate, displayedComponents: [.date, .hourAndMinute])
                     TextField("Notes (optional)", text: $notes, axis: .vertical)
                         .lineLimit(3...6)
                 }
             }
-            .navigationTitle("Close Task")
+            .navigationTitle(isPermanent ? "Close Task" : "Close Occurrence")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
-                    Button("Cancel") {
-                        dismiss()
-                    }
+                    Button("Cancel") { dismiss() }
                 }
-                
                 ToolbarItem(placement: .confirmationAction) {
-                    Button("Done") {
-                        completeTask()
-                    }
+                    Button("Done") { complete() }
                 }
             }
         }
     }
-    
-    private func completeTask() {
-        task.markCompleted(on: completionDate)
-        
-        let record = MaintenanceRecord(
-            task: task,
-            completedDate: completionDate,
-            notes: notes,
-            action: .closed
-        )
+
+    private func complete() {
+        if isPermanent {
+            task.isActive = false
+            task.lastCompleted = completionDate
+        } else {
+            task.markCompleted(on: completionDate)
+        }
+        let action: TaskAction = isPermanent ? .closed : .occurrenceClosed
+        let record = MaintenanceRecord(task: task, completedDate: completionDate, notes: notes, action: action)
         modelContext.insert(record)
-        
         dismiss()
     }
 }
+
+// MARK: - Supporting Views
 
 struct SelectApplianceView: View {
     @Environment(\.dismiss) private var dismiss
     @Bindable var task: MaintenanceTask
     let allAppliances: [Appliance]
-    
+
     var body: some View {
         NavigationStack {
             List {
@@ -381,13 +418,12 @@ struct SelectApplianceView: View {
                             Text("None")
                             Spacer()
                             if task.appliance == nil {
-                                Image(systemName: "checkmark")
-                                    .foregroundStyle(.blue)
+                                Image(systemName: "checkmark").foregroundStyle(.blue)
                             }
                         }
                     }
                 }
-                
+
                 if !allAppliances.isEmpty {
                     Section("Appliances") {
                         ForEach(allAppliances) { appliance in
@@ -400,8 +436,7 @@ struct SelectApplianceView: View {
                                     Text(appliance.name)
                                     Spacer()
                                     if task.appliance?.id == appliance.id {
-                                        Image(systemName: "checkmark")
-                                            .foregroundStyle(.blue)
+                                        Image(systemName: "checkmark").foregroundStyle(.blue)
                                     }
                                 }
                             }
@@ -420,9 +455,7 @@ struct SelectApplianceView: View {
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
-                    Button("Cancel") {
-                        dismiss()
-                    }
+                    Button("Cancel") { dismiss() }
                 }
             }
         }
@@ -433,7 +466,7 @@ struct EditRecordNotesView: View {
     @Environment(\.dismiss) private var dismiss
     @Bindable var record: MaintenanceRecord
     @FocusState private var isFocused: Bool
-    
+
     var body: some View {
         NavigationStack {
             Form {
@@ -441,13 +474,12 @@ struct EditRecordNotesView: View {
                     LabeledContent("Date") {
                         Text(record.completedDate, format: .dateTime.month().day().year().hour().minute())
                     }
-                    
                     LabeledContent("Action") {
                         Text(record.action.rawValue)
                             .foregroundStyle(record.action == .closed ? .green : .orange)
                     }
                 }
-                
+
                 Section("Notes") {
                     TextField("Add notes about this completion...", text: $record.notes, axis: .vertical)
                         .lineLimit(3...10)
@@ -458,22 +490,14 @@ struct EditRecordNotesView: View {
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
-                    Button("Cancel") {
-                        dismiss()
-                    }
+                    Button("Cancel") { dismiss() }
                 }
-                
                 ToolbarItem(placement: .confirmationAction) {
-                    Button("Done") {
-                        dismiss()
-                    }
+                    Button("Done") { dismiss() }
                 }
             }
             .onAppear {
-                // Small delay to allow the view to appear before showing keyboard
-                DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
-                    isFocused = true
-                }
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) { isFocused = true }
             }
         }
     }
@@ -546,11 +570,8 @@ struct EditMaintenanceTaskView: View {
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
-                    Button("Cancel") {
-                        dismiss()
-                    }
+                    Button("Cancel") { dismiss() }
                 }
-
                 ToolbarItem(placement: .confirmationAction) {
                     Button("Save") {
                         saveChanges()
@@ -567,7 +588,6 @@ struct EditMaintenanceTaskView: View {
         task.taskDescription = description
         task.room = room
         task.appliance = selectedAppliance
-
         if task.frequency != selectedFrequency {
             task.updateFrequency(selectedFrequency)
         }
@@ -577,10 +597,10 @@ struct EditMaintenanceTaskView: View {
 #Preview {
     let config = ModelConfiguration(isStoredInMemoryOnly: true)
     let container = try! ModelContainer(for: MaintenanceTask.self, configurations: config)
-    
+
     let task = MaintenanceTask(name: "Change HVAC Filter", description: "Replace air filter", frequency: .monthly)
     container.mainContext.insert(task)
-    
+
     return NavigationStack {
         MaintenanceTaskDetailView(task: task)
     }

@@ -108,6 +108,10 @@ struct AddMaintenanceTaskView: View {
             modelContext.insert(product)
         }
 
+        Task {
+            await CalendarService.shared.addTaskEvent(task: task)
+        }
+
         dismiss()
     }
 }
