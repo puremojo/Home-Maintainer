@@ -7,38 +7,34 @@
 
 import SwiftUI
 import SwiftData
-import MapKit
+import CoreLocation
 
-struct ServiceProviderSuggestionsView: View {
+// MARK: - Find Businesses Modal
+
+struct FindBusinessesView: View {
     @Environment(LocationManager.self) private var locationManager
     @Environment(LocalBusinessSearchService.self) private var searchService
     @Environment(\.modelContext) private var modelContext
+    @Environment(HomeManager.self) private var homeManager
     @Environment(\.dismiss) private var dismiss
-    
-    let category: ServiceCategory
-    
+
+    var initialCategory: ServiceCategory?
+
+    @State private var searchText = ""
+    @State private var radiusMiles: Double = 10
     @State private var hasSearched = false
-    
-    var suggestions: [SuggestedBusiness] {
-        guard let mapItems = searchService.searchResults[category] else { return [] }
-        let businesses = mapItems.map { SuggestedBusiness(mapItem: $0, category: category) }
-        
-        // Sort by distance if we have user location
-        if let userLocation = locationManager.userLocation {
-            return businesses.sorted { business1, business2 in
-                guard let loc1 = business1.mapItem.placemark.location,
-                      let loc2 = business2.mapItem.placemark.location else {
-                    return false
-                }
-                let dist1 = userLocation.distance(from: loc1)
-                let dist2 = userLocation.distance(from: loc2)
-                return dist1 < dist2
-            }
+    @State private var searchTask: Task<Void, Never>?
+
+    private var sortedResults: [GooglePlaceResult] {
+        let items = searchService.textSearchResults
+        guard let loc = locationManager.userLocation else { return items }
+        return items.sorted {
+            let d1 = $0.distanceFrom(loc) ?? .greatestFiniteMagnitude
+            let d2 = $1.distanceFrom(loc) ?? .greatestFiniteMagnitude
+            return d1 < d2
         }
-        
-        return businesses
     }
-    
+
     var body: some View {
         NavigationStack {
             Group {
@@ -46,206 +42,251 @@ struct ServiceProviderSuggestionsView: View {
                     ContentUnavailableView(
                         "Location Access Needed",
                         systemImage: "location.slash",
-                        description: Text("Please enable location access in Settings to find local \(category.rawValue.lowercased())s")
+                        description: Text("Enable location access in Settings to find local businesses near you.")
                     )
                 } else if !hasSearched {
-                    VStack(spacing: 20) {
-                        Image(systemName: category.systemImage)
-                            .font(.system(size: 60))
-                            .foregroundStyle(.blue)
-                        
-                        Text("Find Local \(category.rawValue)s")
-                            .font(.title2)
-                            .fontWeight(.semibold)
-                        
-                        Text("We'll search for local businesses near you")
-                            .font(.subheadline)
-                            .foregroundStyle(.secondary)
-                            .multilineTextAlignment(.center)
-                        
-                        Button {
-                            searchForBusinesses()
-                        } label: {
-                            Label("Search Near Me", systemImage: "magnifyingglass")
-                                .frame(maxWidth: .infinity)
-                        }
-                        .buttonStyle(.borderedProminent)
-                        .padding(.horizontal)
-                    }
-                    .padding()
+                    initialStateView
                 } else if searchService.isSearching {
                     VStack(spacing: 16) {
                         ProgressView()
-                        Text("Searching for local \(category.rawValue.lowercased())s...")
+                        Text("Searching Google Places…")
                             .font(.subheadline)
                             .foregroundStyle(.secondary)
                     }
-                } else if suggestions.isEmpty {
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+                } else if let error = searchService.searchError {
+                    ContentUnavailableView(
+                        "Search Error",
+                        systemImage: "exclamationmark.triangle",
+                        description: Text(error)
+                    )
+                } else if sortedResults.isEmpty {
                     ContentUnavailableView(
                         "No Results",
                         systemImage: "magnifyingglass",
-                        description: Text("No local \(category.rawValue.lowercased())s found nearby")
+                        description: Text("No businesses found for \"\(searchText)\". Try a different search.")
                     )
                 } else {
-                    List {
-                        Section {
-                            ForEach(suggestions) { business in
-                                SuggestedBusinessRow(
-                                    business: business,
-                                    userLocation: locationManager.userLocation
-                                )
-                            }
-                        } header: {
-                            Text("Found \(suggestions.count) local \(category.rawValue.lowercased())\(suggestions.count == 1 ? "" : "s") • Sorted by distance")
-                        }
-                    }
+                    resultsList
                 }
             }
-            .navigationTitle("Find \(category.rawValue)s")
+            .safeAreaInset(edge: .top, spacing: 0) {
+                HStack(spacing: 10) {
+                    Image(systemName: "location.circle")
+                        .foregroundStyle(.secondary)
+                    Slider(value: $radiusMiles, in: 5...50, step: 5)
+                    Text("\(Int(radiusMiles)) mi")
+                        .font(.subheadline)
+                        .foregroundStyle(.secondary)
+                        .frame(width: 44, alignment: .trailing)
+                }
+                .padding(.horizontal)
+                .padding(.vertical, 8)
+                .background(.bar)
+            }
+            .navigationTitle("Find Businesses")
             .navigationBarTitleDisplayMode(.inline)
+            .searchable(
+                text: $searchText,
+                placement: .navigationBarDrawer(displayMode: .always),
+                prompt: "Search (e.g., plumbers, roofers)"
+            )
+            .onSubmit(of: .search) { performSearch() }
+            .onChange(of: searchText) { _, new in
+                if new.isEmpty {
+                    hasSearched = false
+                    searchService.textSearchResults = []
+                }
+            }
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
-                    Button("Done") {
-                        dismiss()
-                    }
+                    Button("Done") { dismiss() }
                 }
-                
                 if hasSearched && !searchService.isSearching {
                     ToolbarItem(placement: .primaryAction) {
-                        Button {
-                            searchForBusinesses()
-                        } label: {
+                        Button { performSearch() } label: {
                             Label("Refresh", systemImage: "arrow.clockwise")
                         }
                     }
                 }
             }
             .onAppear {
-                print("🔍 SuggestionsView appeared for category: \(category.rawValue)")
-                print("🔍 Current auth status: \(locationManager.authorizationStatus.rawValue)")
-                print("🔍 Has location: \(locationManager.userLocation != nil)")
-                
-                // Automatically start searching when view appears
-                searchForBusinesses()
-            }
-        }
-    }
-    
-    private func searchForBusinesses() {
-        print("🔍 Search button tapped")
-        print("🔍 Auth status: \(locationManager.authorizationStatus.rawValue)")
-        print("🔍 Has location: \(locationManager.userLocation != nil)")
-        
-        // Request location if we don't have permission yet
-        if locationManager.authorizationStatus == .notDetermined {
-            print("🔍 Requesting location permission")
-            locationManager.requestLocation()
-            // Wait for location and retry
-            DispatchQueue.main.asyncAfter(deadline: .now() + 2.0) {
-                print("🔍 Retrying after permission request")
-                self.searchForBusinesses()
-            }
-            return
-        }
-        
-        // Check if we have location
-        if let location = locationManager.userLocation {
-            print("🔍 Have location, performing search")
-            performSearch(at: location)
-        } else {
-            print("🔍 Don't have location yet, requesting")
-            // Request location update
-            locationManager.requestLocation()
-            // Wait a bit and try again
-            DispatchQueue.main.asyncAfter(deadline: .now() + 2.0) {
-                if let location = self.locationManager.userLocation {
-                    print("🔍 Got location after waiting, performing search")
-                    self.performSearch(at: location)
-                } else {
-                    print("🔍 Still no location after waiting")
-                    print("🔍 Error: \(self.locationManager.errorMessage ?? "no error")")
+                if let category = initialCategory {
+                    searchText = category.searchQuery
+                    performSearch()
+                }
+                if locationManager.authorizationStatus == .notDetermined {
+                    locationManager.requestLocation()
                 }
             }
         }
     }
-    
-    private func performSearch(at location: CLLocation) {
-        print("🔍 Performing search at location: \(location.coordinate.latitude), \(location.coordinate.longitude)")
-        hasSearched = true
-        Task {
-            await searchService.searchForLocalBusinesses(category: category, near: location)
-            await MainActor.run {
-                print("🔍 Search completed, found \(suggestions.count) results")
+
+    private var initialStateView: some View {
+        ScrollView {
+            VStack(spacing: 24) {
+                VStack(spacing: 10) {
+                    Image(systemName: "magnifyingglass.circle.fill")
+                        .font(.system(size: 60))
+                        .foregroundStyle(.blue)
+                    Text("Find Local Businesses")
+                        .font(.title2.weight(.semibold))
+                    Text("Type in the search bar above, or tap a category below")
+                        .font(.subheadline)
+                        .foregroundStyle(.secondary)
+                        .multilineTextAlignment(.center)
+                }
+                .padding(.top)
+
+                LazyVGrid(columns: [GridItem(.flexible()), GridItem(.flexible())], spacing: 12) {
+                    ForEach(ServiceCategory.allCases.filter { $0 != .other }) { category in
+                        Button {
+                            searchText = category.searchQuery
+                            performSearch()
+                        } label: {
+                            HStack {
+                                Image(systemName: category.systemImage)
+                                    .foregroundStyle(.blue)
+                                    .frame(width: 20)
+                                Text(category.rawValue)
+                                    .font(.subheadline)
+                                    .foregroundStyle(.primary)
+                                    .lineLimit(1)
+                                Spacer()
+                            }
+                            .padding(12)
+                            .background(Color(.systemGray6))
+                            .clipShape(RoundedRectangle(cornerRadius: 10))
+                        }
+                    }
+                }
+                .padding(.horizontal)
             }
+            .padding(.bottom)
+        }
+    }
+
+    private var resultsList: some View {
+        List {
+            Section {
+                ForEach(sortedResults) { place in
+                    GooglePlaceRow(place: place, userLocation: locationManager.userLocation, home: homeManager.currentHome)
+                }
+            } header: {
+                Text("\(sortedResults.count) result\(sortedResults.count == 1 ? "" : "s") • Sorted by distance")
+            }
+        }
+    }
+
+    private func performSearch() {
+        let query = searchText.trimmingCharacters(in: .whitespaces)
+        guard !query.isEmpty else { return }
+        hasSearched = true
+        searchTask?.cancel()
+        searchTask = Task {
+            await searchService.textSearch(query: query, near: locationManager.userLocation, radiusMiles: radiusMiles)
         }
     }
 }
 
-struct SuggestedBusinessRow: View {
+// MARK: - Google Place Row
+
+struct GooglePlaceRow: View {
     @Environment(\.modelContext) private var modelContext
     @Query private var allProviders: [ServiceProvider]
-    
-    let business: SuggestedBusiness
+
+    let place: GooglePlaceResult
     let userLocation: CLLocation?
-    
+    let home: Home?
+
     @State private var showingAddConfirmation = false
-    
-    // Check if this business is already in saved providers
-    var isAlreadyAdded: Bool {
-        allProviders.contains { provider in
-            // Match by name and category (could also match by phone if available)
-            provider.name.lowercased() == business.name.lowercased() &&
-            provider.category == business.category
-        }
+
+    private var isAlreadyAdded: Bool {
+        allProviders.contains { $0.googlePlaceID == place.id || $0.name.lowercased() == place.name.lowercased() }
     }
-    
-    var distanceText: String? {
-        guard let userLocation = userLocation,
-              let businessLocation = business.mapItem.placemark.location else {
-            return nil
-        }
-        
-        let distance = userLocation.distance(from: businessLocation)
-        let miles = distance / 1609.34 // Convert meters to miles
-        
-        if miles < 0.1 {
-            return "nearby"
-        } else if miles < 1 {
-            return String(format: "%.1f mi", miles)
-        } else {
-            return String(format: "%.0f mi", miles)
-        }
+
+    private var distanceText: String? {
+        guard let userLocation, let dist = place.distanceFrom(userLocation) else { return nil }
+        let miles = dist / 1609.34
+        if miles < 0.1 { return "nearby" }
+        if miles < 1 { return String(format: "%.1f mi", miles) }
+        return String(format: "%.0f mi", miles)
     }
-    
+
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
-            HStack {
+            HStack(alignment: .top) {
                 VStack(alignment: .leading, spacing: 4) {
-                    Text(business.name)
+                    Text(place.name)
                         .font(.headline)
-                    
-                    if let distance = distanceText {
-                        Label(distance, systemImage: "location.fill")
+
+                    // Rating / price / type row
+                    HStack(spacing: 8) {
+                        if let rating = place.rating {
+                            HStack(spacing: 2) {
+                                Image(systemName: "star.fill")
+                                    .font(.caption2)
+                                    .foregroundStyle(.yellow)
+                                Text(String(format: "%.1f", rating))
+                                    .font(.caption)
+                                if let count = place.userRatingCount {
+                                    Text("(\(count))")
+                                        .font(.caption)
+                                }
+                            }
+                            .foregroundStyle(.secondary)
+                        }
+                        if let price = place.displayPriceLevel {
+                            Text(price)
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                        }
+                        if let type = place.primaryTypeDisplay {
+                            Text(type)
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                        }
+                    }
+
+                    if let dist = distanceText {
+                        Label(dist, systemImage: "location.fill")
                             .font(.caption)
                             .foregroundStyle(.secondary)
                     }
-                    
-                    if !business.address.isEmpty {
-                        Text(business.address)
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                            .lineLimit(2)
+
+                    if !place.address.isEmpty {
+                        if let mapsURL = place.mapsURL {
+                            Link(destination: mapsURL) {
+                                Text(place.address)
+                                    .font(.caption)
+                                    .foregroundStyle(.blue)
+                                    .lineLimit(2)
+                            }
+                        } else {
+                            Text(place.address)
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                                .lineLimit(2)
+                        }
                     }
-                    
-                    if let phone = business.phoneNumber {
-                        Text(phone)
+
+                    if let phone = place.phoneNumber,
+                       let url = URL(string: "tel:\(phone.filter { "0123456789+".contains($0) })") {
+                        Link(phone, destination: url)
                             .font(.caption)
                             .foregroundStyle(.blue)
                     }
+
+                    if let website = place.website, let url = URL(string: website) {
+                        Link(website, destination: url)
+                            .font(.caption)
+                            .foregroundStyle(.blue)
+                            .lineLimit(1)
+                    }
                 }
-                
-                Spacer()
-                
+
+                Spacer(minLength: 8)
+
                 if isAlreadyAdded {
                     VStack(spacing: 2) {
                         Image(systemName: "checkmark.circle.fill")
@@ -256,9 +297,7 @@ struct SuggestedBusinessRow: View {
                             .foregroundStyle(.secondary)
                     }
                 } else {
-                    Button {
-                        showingAddConfirmation = true
-                    } label: {
+                    Button { showingAddConfirmation = true } label: {
                         Image(systemName: "plus.circle.fill")
                             .font(.title2)
                             .foregroundStyle(.blue)
@@ -266,37 +305,55 @@ struct SuggestedBusinessRow: View {
                     .buttonStyle(.plain)
                 }
             }
+
+            // Today's hours
+            if let hours = place.weekdayDescriptions, !hours.isEmpty {
+                let todayIdx = (Calendar.current.component(.weekday, from: Date()) + 5) % 7
+                if todayIdx < hours.count {
+                    HStack(spacing: 4) {
+                        Image(systemName: "clock")
+                            .font(.caption2)
+                            .foregroundStyle(.secondary)
+                        Text(hours[todayIdx])
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                }
+            }
         }
         .padding(.vertical, 4)
-        .confirmationDialog(
-            "Add \(business.name) to your providers?",
-            isPresented: $showingAddConfirmation
-        ) {
-            Button("Add Provider") {
-                addProvider()
-            }
-            
-            Button("Cancel", role: .cancel) { }
+        .confirmationDialog("Add \(place.name) to your providers?", isPresented: $showingAddConfirmation) {
+            Button("Add Provider") { addProvider() }
+            Button("Cancel", role: .cancel) {}
         }
     }
-    
+
     private func addProvider() {
         let provider = ServiceProvider(
-            name: business.name,
-            category: business.category,
-            phoneNumber: business.phoneNumber ?? "",
+            name: place.name,
+            category: place.category,
+            phoneNumber: place.phoneNumber ?? "",
             email: ""
         )
-        
-        provider.address = business.address
-        
+        provider.address = place.address
+        provider.website = place.website ?? ""
+        provider.googlePlaceID = place.id
+        provider.googleRating = place.rating
+        provider.googlePriceLevel = place.priceLevel
+        provider.weekdayHours = place.weekdayDescriptions
+        provider.businessTypes = place.types.isEmpty ? nil : place.types
+        provider.home = home
         modelContext.insert(provider)
     }
 }
 
+// Backward-compat alias — ServiceProvidersView still references this name
+typealias ServiceProviderSuggestionsView = FindBusinessesView
+
 #Preview {
-    ServiceProviderSuggestionsView(category: .plumber)
+    FindBusinessesView()
         .environment(LocationManager())
         .environment(LocalBusinessSearchService())
+        .environment(HomeManager())
         .modelContainer(for: ServiceProvider.self, inMemory: true)
 }

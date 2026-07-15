@@ -24,6 +24,7 @@ struct RepairProjectDetailView: View {
     @State private var selectedLinkedHomeDocument: HomeDocument?
     @State private var showingAddSubTask = false
     @State private var showingAddWorkDate = false
+    @State private var showingProviderPicker = false
 
     private var linkedHomeDocuments: [HomeDocument] {
         allHomeDocuments
@@ -133,19 +134,51 @@ struct RepairProjectDetailView: View {
             }
 
             Section {
-                if let hiredProvider = project.hiredProvider {
-                    LabeledContent("Hired Provider") {
-                        NavigationLink(destination: ServiceProviderDetailView(provider: hiredProvider)) {
-                            Text(hiredProvider.name)
-                        }
-                    }
-                } else {
-                    Menu {
-                        ForEach(providers.sorted(by: { $0.name < $1.name })) { provider in
-                            Button(provider.name) {
-                                project.hiredProvider = provider
+                if let hp = project.hiredProvider {
+                    let cleanPhone = hp.phoneNumber.filter { "0123456789+".contains($0) }
+                    NavigationLink(destination: ServiceProviderDetailView(provider: hp)) {
+                        HStack(spacing: 10) {
+                            Image(systemName: hp.category.systemImage)
+                                .foregroundStyle(.blue)
+                                .frame(width: 24)
+                            VStack(alignment: .leading, spacing: 2) {
+                                Text(hp.name).font(.headline)
+                                if !hp.phoneNumber.isEmpty {
+                                    Text(hp.phoneNumber).font(.caption).foregroundStyle(.secondary)
+                                }
+                                if !hp.address.isEmpty {
+                                    Text(hp.address).font(.caption).foregroundStyle(.secondary).lineLimit(1)
+                                }
                             }
                         }
+                    }
+                    if !hp.phoneNumber.isEmpty, let url = URL(string: "tel:\(cleanPhone)") {
+                        LabeledContent("Call") {
+                            Link(hp.phoneNumber, destination: url).foregroundStyle(.blue)
+                        }
+                    }
+                    if !hp.website.isEmpty {
+                        let urlStr = hp.website.hasPrefix("http") ? hp.website : "https://\(hp.website)"
+                        if let url = URL(string: urlStr) {
+                            LabeledContent("Website") {
+                                Link(hp.website, destination: url).foregroundStyle(.blue).lineLimit(1)
+                            }
+                        }
+                    }
+                    if let rating = hp.googleRating {
+                        LabeledContent("Rating") {
+                            HStack(spacing: 2) {
+                                Image(systemName: "star.fill").foregroundStyle(.yellow).font(.caption)
+                                Text(String(format: "%.1f", rating))
+                            }
+                        }
+                    }
+                    Button("Change Provider", role: .destructive) {
+                        project.hiredProvider = nil
+                    }
+                } else {
+                    Button {
+                        showingProviderPicker = true
                     } label: {
                         Label("Select Hired Provider", systemImage: "person.badge.plus")
                     }
@@ -334,6 +367,11 @@ struct RepairProjectDetailView: View {
                 data: doc.attachmentData ?? Data(),
                 contentType: doc.attachmentContentType ?? ""
             )
+        }
+        .sheet(isPresented: $showingProviderPicker) {
+            ProviderPickerSheet(home: project.home) { provider in
+                project.hiredProvider = provider
+            }
         }
     }
 }

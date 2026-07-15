@@ -257,6 +257,7 @@ struct ChatView: View {
     @State private var showingImagePicker = false
     @State private var showingCamera = false
     @State private var selectedImages: [UIImage] = []
+    @State private var lastSearchPlaces: [GooglePlaceResult] = []
     
     var body: some View {
         VStack(spacing: 0) {
@@ -496,7 +497,13 @@ struct ChatView: View {
             
         case "search_local_providers":
             return await searchLocalProviders(from: arguments)
-            
+
+        case "search_saved_providers":
+            return await searchSavedProviders(from: arguments)
+
+        case "save_search_result":
+            return await saveSearchResult(from: arguments)
+
         case "add_service_provider":
             return await addServiceProvider(from: arguments)
 
@@ -580,13 +587,11 @@ struct ChatView: View {
               let params = try? JSONDecoder().decode(SearchProviderParams.self, from: data) else {
             return "Failed to parse search parameters"
         }
-        
-        // Get user location
+
         guard let location = locationManager.userLocation else {
             return "Location not available. Please enable location services to search for local providers."
         }
-        
-        // Map category string to ServiceCategory
+
         let category: ServiceCategory
         switch params.category {
         case "electrician": category = .electrician
@@ -601,28 +606,92 @@ struct ChatView: View {
         case "appliance": category = .appliance
         default: category = .other
         }
-        
-        // Search for businesses
+
         await searchService.searchForLocalBusinesses(category: category, near: location)
-        
-        // Wait a moment for results
-        try? await Task.sleep(for: .seconds(1))
-        
-        // Get results
-        guard let mapItems = searchService.searchResults[category], !mapItems.isEmpty else {
+
+        guard let places = searchService.searchResults[category], !places.isEmpty else {
             return "No \(category.rawValue.lowercased())s found nearby."
         }
-        
-        // Format results
-        let results = mapItems.prefix(5).enumerated().map { index, item in
-            let name = item.name ?? "Unknown"
-            let phone = item.phoneNumber ?? "No phone"
-            return "\(index + 1). \(name) - \(phone)"
+
+        let topPlaces = Array(places.prefix(5))
+        await MainActor.run { lastSearchPlaces = topPlaces }
+
+        let lines = topPlaces.enumerated().map { i, place -> String in
+            var info = "\(i + 1). \(place.name)"
+            if let phone = place.phoneNumber { info += " — \(phone)" }
+            if let rating = place.rating { info += " — ⭐ \(String(format: "%.1f", rating))" }
+            if let price = place.displayPriceLevel { info += " (\(price))" }
+            if !place.address.isEmpty { info += "\n   \(place.address)" }
+            return info
         }
-        
-        return "Found \(mapItems.count) local \(category.rawValue.lowercased())s:\n" + results.joined(separator: "\n")
+
+        return "Found \(places.count) local \(category.rawValue.lowercased())\(places.count == 1 ? "" : "s") nearby:\n" + lines.joined(separator: "\n") + "\n\nTo save one, use save_search_result with its number."
+    }
+
+    private func searchSavedProviders(from jsonString: String) async -> String {
+        guard let data = jsonString.data(using: .utf8),
+              let params = try? JSONDecoder().decode(SearchSavedProvidersParams.self, from: data) else {
+            return "Failed to parse search parameters"
+        }
+
+        let homeID = homeManager.currentHome?.id
+        let q = params.query.lowercased()
+        let matched = providers.filter { p in
+            guard p.home?.id == homeID else { return false }
+            return p.name.lowercased().contains(q) ||
+                   p.category.rawValue.lowercased().contains(q) ||
+                   p.phoneNumber.contains(q)
+        }
+
+        if matched.isEmpty {
+            return "No saved providers found matching '\(params.query)'. Use search_local_providers to find new businesses."
+        }
+
+        let lines = matched.prefix(10).map { p -> String in
+            var info = "• \(p.name) (\(p.category.rawValue))"
+            if !p.phoneNumber.isEmpty { info += " — \(p.phoneNumber)" }
+            if !p.address.isEmpty { info += "\n  \(p.address)" }
+            if let rating = p.googleRating { info += " — ⭐ \(String(format: "%.1f", rating))" }
+            if let price = p.displayPriceLevel { info += " (\(price))" }
+            return info
+        }
+
+        return "Found \(matched.count) saved provider\(matched.count == 1 ? "" : "s") matching '\(params.query)':\n" + lines.joined(separator: "\n")
     }
     
+    private func saveSearchResult(from jsonString: String) async -> String {
+        guard let data = jsonString.data(using: .utf8),
+              let params = try? JSONDecoder().decode(SaveSearchResultParams.self, from: data) else {
+            return "Failed to parse parameters"
+        }
+
+        let index = params.resultNumber - 1
+        guard index >= 0 && index < lastSearchPlaces.count else {
+            return "Result #\(params.resultNumber) not found. Please search again first."
+        }
+
+        let place = lastSearchPlaces[index]
+        await MainActor.run {
+            let provider = ServiceProvider(
+                name: place.name,
+                category: place.category,
+                phoneNumber: place.phoneNumber ?? "",
+                email: ""
+            )
+            provider.address = place.address
+            provider.website = place.website ?? ""
+            provider.googlePlaceID = place.id
+            provider.googleRating = place.rating
+            provider.googlePriceLevel = place.priceLevel
+            provider.weekdayHours = place.weekdayDescriptions
+            provider.businessTypes = place.types.isEmpty ? nil : place.types
+            provider.home = homeManager.currentHome
+            modelContext.insert(provider)
+        }
+
+        return "✅ Added \(place.name) to your providers"
+    }
+
     private func addServiceProvider(from jsonString: String) async -> String {
         guard let data = jsonString.data(using: .utf8),
               let params = try? JSONDecoder().decode(ServiceProviderParams.self, from: data) else {
@@ -652,10 +721,10 @@ struct ChatView: View {
                 email: ""
             )
             
-            if let address = params.address {
-                provider.address = address
-            }
-            
+            if let address = params.address { provider.address = address }
+            if let website = params.website { provider.website = website }
+            if let rating = params.rating { provider.googleRating = rating }
+
             provider.home = homeManager.currentHome
             modelContext.insert(provider)
         }
@@ -929,11 +998,21 @@ private struct SearchProviderParams: Codable {
     let category: String
 }
 
+private struct SearchSavedProvidersParams: Codable {
+    let query: String
+}
+
+private struct SaveSearchResultParams: Codable {
+    let resultNumber: Int
+}
+
 private struct ServiceProviderParams: Codable {
     let name: String
     let category: String
     let phoneNumber: String?
     let address: String?
+    let website: String?
+    let rating: Double?
 }
 
 private struct RepairProjectParams: Codable {

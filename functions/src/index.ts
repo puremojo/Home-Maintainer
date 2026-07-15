@@ -78,8 +78,22 @@ const TOOLS = [
         },
       },
       {
+        name: "save_search_result",
+        description: "Save a specific numbered result from the most recent search_local_providers call to the user's saved providers. Use this (not add_service_provider) whenever the user asks to add a result by number from a local search.",
+        parameters: {
+          type: "OBJECT",
+          properties: {
+            resultNumber: {
+              type: "NUMBER",
+              description: "The result number to save (1, 2, 3… as listed in the search output)",
+            },
+          },
+          required: ["resultNumber"],
+        },
+      },
+      {
         name: "add_service_provider",
-        description: "Add a service provider to the user's saved list",
+        description: "Add a service provider by name/details when NOT coming from a local search result. Include ALL known details — phone, address, website, and rating.",
         parameters: {
           type: "OBJECT",
           properties: {
@@ -90,7 +104,9 @@ const TOOLS = [
               description: "Type of service",
             },
             phoneNumber: { type: "STRING", description: "Phone number" },
-            address: { type: "STRING", description: "Address" },
+            address: { type: "STRING", description: "Full street address" },
+            website: { type: "STRING", description: "Website URL" },
+            rating: { type: "NUMBER", description: "Google rating (e.g. 4.7)" },
           },
           required: ["name", "category"],
         },
@@ -238,6 +254,77 @@ Reply ONLY with a concise updated memory (under 500 characters). If nothing new,
     // Non-fatal
   }
 }
+
+// Proxy for Google Places API — keeps the API key server-side.
+// iOS sends { query, latitude?, longitude? } and receives the raw Places response.
+export const placesSearch = onCall(
+  {
+    enforceAppCheck: true,
+    secrets: ["GOOGLE_PLACES_API_KEY"],
+    timeoutSeconds: 30,
+  },
+  async (request) => {
+    if (!request.auth) {
+      throw new HttpsError("unauthenticated", "You must be signed in.");
+    }
+
+    const { query, latitude, longitude, radius } = request.data as {
+      query: string;
+      latitude?: number;
+      longitude?: number;
+      radius?: number;
+    };
+
+    if (!query || typeof query !== "string") {
+      throw new HttpsError("invalid-argument", "query is required.");
+    }
+
+    const apiKey = process.env.GOOGLE_PLACES_API_KEY ?? "";
+    console.log(`placesSearch: query="${query}", keyLength=${apiKey.length}`);
+
+    const fieldMask = [
+      "places.id",
+      "places.displayName",
+      "places.formattedAddress",
+      "places.nationalPhoneNumber",
+      "places.websiteUri",
+      "places.rating",
+      "places.userRatingCount",
+      "places.priceLevel",
+      "places.types",
+      "places.regularOpeningHours",
+      "places.location",
+    ].join(",");
+
+    const body: Record<string, unknown> = { textQuery: query, maxResultCount: 20 };
+    if (typeof latitude === "number" && typeof longitude === "number") {
+      body.locationBias = {
+        circle: {
+          center: { latitude, longitude },
+          radius: typeof radius === "number" ? radius : 16093.4,
+        },
+      };
+    }
+
+    const placesResponse = await fetch("https://places.googleapis.com/v1/places:searchText", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "X-Goog-Api-Key": apiKey,
+        "X-Goog-FieldMask": fieldMask,
+      },
+      body: JSON.stringify(body),
+    });
+
+    if (!placesResponse.ok) {
+      const errorBody = await placesResponse.text();
+      console.error(`Google Places error ${placesResponse.status}:`, errorBody);
+      throw new HttpsError("internal", `Google Places error ${placesResponse.status}: ${errorBody}`);
+    }
+
+    return await placesResponse.json();
+  }
+);
 
 // Called by iOS after a successful StoreKit purchase to sync the tier to Firestore.
 // Product IDs must match those defined in ServicesSubscriptionService.swift.
