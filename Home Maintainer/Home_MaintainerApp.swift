@@ -25,6 +25,8 @@ struct Home_MaintainerApp: App {
     init() {
         #if DEBUG
         AppCheck.setAppCheckProviderFactory(AppCheckDebugProviderFactory())
+        #else
+        AppCheck.setAppCheckProviderFactory(AppAttestProviderFactory())
         #endif
         FirebaseApp.configure()
         _authService = State(initialValue: AuthService())
