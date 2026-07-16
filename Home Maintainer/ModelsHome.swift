@@ -8,12 +8,12 @@ import SwiftData
 
 @Model
 final class Home {
-    var id: UUID
-    var name: String
-    var address: String
-    var createdDate: Date
-    var ownerName: String
-    var isLocallyCreated: Bool
+    var id: UUID = UUID()
+    var name: String = ""
+    var address: String = ""
+    var createdDate: Date = Date()
+    var ownerName: String = ""
+    var isLocallyCreated: Bool = true
 
     @Relationship(deleteRule: .cascade, inverse: \MaintenanceTask.home)
     var tasks: [MaintenanceTask]?

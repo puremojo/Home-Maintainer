@@ -41,6 +41,16 @@ final class CloudSharingService {
             else { return }
             self?.persistentCloudKitContainer = container
             self?.setupDatabaseSubscriptions(container: container)
+            #if DEBUG
+            DispatchQueue.global(qos: .utility).async {
+                do {
+                    try container.initializeCloudKitSchema(options: [])
+                    print("[CloudSharingService] CloudKit schema initialized")
+                } catch {
+                    print("[CloudSharingService] initializeCloudKitSchema error: \(error)")
+                }
+            }
+            #endif
         }
     }
 

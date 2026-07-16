@@ -8,13 +8,13 @@ import SwiftData
 
 @Model
 final class DocumentSection {
-    var id: UUID
-    var name: String
-    var sortOrder: Int
+    var id: UUID = UUID()
+    var name: String = ""
+    var sortOrder: Int = 0
     var home: Home?
     @Relationship(deleteRule: .cascade, inverse: \HomeDocument.section)
     var documents: [HomeDocument]?
-    var createdAt: Date
+    var createdAt: Date = Date()
 
     init(name: String, sortOrder: Int = 0) {
         self.id = UUID()
@@ -27,17 +27,17 @@ final class DocumentSection {
 
 @Model
 final class HomeDocument {
-    var id: UUID
-    var title: String
+    var id: UUID = UUID()
+    var title: String = ""
     @Attribute(.externalStorage) var attachmentData: Data?
     var attachmentName: String?
     var attachmentContentType: String?
-    var linkedTaskIDs: [UUID]
+    var linkedTaskIDs: [UUID] = []
     var linkedProjectIDs: [UUID] = []
     var linkedAppliance: Appliance?
     var section: DocumentSection?
     var home: Home?
-    var createdAt: Date
+    var createdAt: Date = Date()
 
     init(title: String) {
         self.id = UUID()

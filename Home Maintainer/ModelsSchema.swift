@@ -78,7 +78,7 @@ enum SchemaV1: VersionedSchema {
     }
 }
 
-// MARK: - Schema V2  (current – chatConversations removed from Home, homeID added to ChatConversation)
+// MARK: - Schema V2  (chatConversations removed from Home, homeID added to ChatConversation)
 
 enum SchemaV2: VersionedSchema {
     static var versionIdentifier = Schema.Version(2, 0, 0)
@@ -96,11 +96,29 @@ enum SchemaV2: VersionedSchema {
     }
 }
 
+// MARK: - Schema V3  (current – CloudKit compliance: attribute defaults + inverse relationships)
+
+enum SchemaV3: VersionedSchema {
+    static var versionIdentifier = Schema.Version(3, 0, 0)
+
+    static var models: [any PersistentModel.Type] {
+        [
+            Home.self,
+            ChatConversation.self, ChatMessageData.self, ChatImageData.self,
+            MaintenanceTask.self, MaintenanceRecord.self,
+            Appliance.self, AppliancePhoto.self,
+            ServiceProvider.self,
+            RepairProject.self, ProductLink.self, ProjectContact.self, Quote.self, Invoice.self,
+            DocumentSection.self, HomeDocument.self,
+        ]
+    }
+}
+
 // MARK: - Migration Plan
 
 enum HomeMigrationPlan: SchemaMigrationPlan {
-    static var schemas: [any VersionedSchema.Type] { [SchemaV1.self, SchemaV2.self] }
-    static var stages: [MigrationStage] { [migrateV1toV2] }
+    static var schemas: [any VersionedSchema.Type] { [SchemaV1.self, SchemaV2.self, SchemaV3.self] }
+    static var stages: [MigrationStage] { [migrateV1toV2, migrateV2toV3] }
 
     static let migrateV1toV2 = MigrationStage.custom(
         fromVersion: SchemaV1.self,
@@ -132,4 +150,6 @@ enum HomeMigrationPlan: SchemaMigrationPlan {
             UserDefaults.standard.removeObject(forKey: "chat_homeID_migration_v1v2")
         }
     )
+
+    static let migrateV2toV3 = MigrationStage.lightweight(fromVersion: SchemaV2.self, toVersion: SchemaV3.self)
 }

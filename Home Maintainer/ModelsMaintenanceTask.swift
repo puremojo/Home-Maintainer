@@ -11,23 +11,23 @@ import SwiftUI
 
 @Model
 final class MaintenanceTask {
-    var id: UUID
-    var name: String
-    var taskDescription: String
+    var id: UUID = UUID()
+    var name: String = ""
+    var taskDescription: String = ""
     var room: String = ""
-    var frequency: TaskFrequency
+    var frequency: TaskFrequency = TaskFrequency.monthly
     var lastCompleted: Date?
     var nextDue: Date?
-    var isActive: Bool
+    var isActive: Bool = true
     var records: [MaintenanceRecord]?
     var appliance: Appliance?
     @Relationship(deleteRule: .cascade, inverse: \ProductLink.task)
     var products: [ProductLink]?
     var taskDocuments: [TaskDocument]?
-    var createdAt: Date
+    var createdAt: Date = Date()
     var home: Home?
     var sourceProject: RepairProject?
-    
+
     init(name: String, description: String, frequency: TaskFrequency, appliance: Appliance? = nil, room: String = "") {
         self.id = UUID()
         self.name = name
@@ -51,7 +51,7 @@ final class MaintenanceTask {
     func removeDocument(_ document: TaskDocument) {
         taskDocuments?.removeAll { $0.id == document.id }
     }
-    
+
     func markCompleted(on date: Date = Date()) {
         self.lastCompleted = date
         self.nextDue = calculateNextDue(from: date, frequency: frequency)
@@ -70,10 +70,10 @@ final class MaintenanceTask {
         let base = lastCompleted ?? Date()
         self.nextDue = calculateNextDue(from: base, frequency: newFrequency)
     }
-    
+
     private func calculateNextDue(from date: Date, frequency: TaskFrequency) -> Date? {
         let calendar = Calendar.current
-        
+
         switch frequency {
         case .once:
             // A one-time task never repeats, so there is no next due date.
@@ -96,19 +96,19 @@ final class MaintenanceTask {
             return calendar.date(byAdding: .day, value: days, to: date)
         }
     }
-    
+
     var isOverdue: Bool {
         guard let nextDue = nextDue else { return false }
         return nextDue < Date()
     }
-    
+
     // Check if task is completed and not yet due again
     var isCompletedForCurrentCycle: Bool {
         guard let lastCompleted = lastCompleted,
               let nextDue = nextDue else {
             return false
         }
-        
+
         // If we've completed it and the next due date hasn't passed yet
         return nextDue > Date()
     }
@@ -124,7 +124,7 @@ enum TaskFrequency: Codable, Hashable, Equatable {
     case biannually
     case annually
     case custom(days: Int)
-    
+
     var displayName: String {
         switch self {
         case .once: return "Never"
@@ -142,12 +142,12 @@ enum TaskFrequency: Codable, Hashable, Equatable {
 
 @Model
 final class MaintenanceRecord {
-    var id: UUID
+    var id: UUID = UUID()
     var task: MaintenanceTask?
-    var completedDate: Date
-    var notes: String
-    var action: TaskAction
-    
+    var completedDate: Date = Date()
+    var notes: String = ""
+    var action: TaskAction = TaskAction.closed
+
     init(task: MaintenanceTask, completedDate: Date = Date(), notes: String = "", action: TaskAction = .closed) {
         self.id = UUID()
         self.task = task
@@ -156,6 +156,7 @@ final class MaintenanceRecord {
         self.action = action
     }
 }
+
 enum TaskAction: String, Codable {
     case closed = "Closed"
     case occurrenceClosed = "Occurrence Closed"
@@ -220,4 +221,3 @@ struct TaskDocument: Codable, Identifiable {
         }
     }
 }
-

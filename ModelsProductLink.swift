@@ -12,11 +12,11 @@ import SwiftData
 /// to a maintenance task or a repair project.
 @Model
 final class ProductLink {
-    var id: UUID
-    var name: String
-    var urlString: String
+    var id: UUID = UUID()
+    var name: String = ""
+    var urlString: String = ""
     @Attribute(.externalStorage) var imageData: Data?
-    var createdAt: Date
+    var createdAt: Date = Date()
 
     // Back-references. A product link belongs to either a task or a project.
     var task: MaintenanceTask?

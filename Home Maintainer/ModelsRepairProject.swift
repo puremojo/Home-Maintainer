@@ -11,12 +11,12 @@ import SwiftUI
 
 @Model
 final class RepairProject {
-    var id: UUID
-    var title: String
-    var projectDescription: String
-    var category: ServiceCategory
-    var status: ProjectStatus
-    var priority: ProjectPriority
+    var id: UUID = UUID()
+    var title: String = ""
+    var projectDescription: String = ""
+    var category: ServiceCategory = ServiceCategory.other
+    var status: ProjectStatus = ProjectStatus.planning
+    var priority: ProjectPriority = ProjectPriority.medium
     var contacts: [ProjectContact]?
     var quotes: [Quote]?
     @Relationship(deleteRule: .cascade, inverse: \ProductLink.project)
@@ -25,9 +25,9 @@ final class RepairProject {
     var hiredProvider: ServiceProvider?
     var startDate: Date?
     var completionDate: Date?
-    var notes: String
+    var notes: String = ""
     var projectDocuments: [ProjectDocument]?
-    var createdAt: Date
+    var createdAt: Date = Date()
     var home: Home?
     @Relationship(deleteRule: .cascade, inverse: \MaintenanceTask.sourceProject)
     var subTasks: [MaintenanceTask]?
@@ -55,7 +55,7 @@ final class RepairProject {
     func removeDocument(_ document: ProjectDocument) {
         projectDocuments?.removeAll { $0.id == document.id }
     }
-    
+
     var totalQuotedAmount: Double {
         quotes?.reduce(0) { $0 + $1.amount } ?? 0
     }
@@ -75,7 +75,7 @@ enum ProjectPriority: Int, Codable, CaseIterable, Comparable {
     case low = 0
     case medium = 1
     case high = 2
-    
+
     var displayName: String {
         switch self {
         case .low: return "Low"
@@ -83,7 +83,7 @@ enum ProjectPriority: Int, Codable, CaseIterable, Comparable {
         case .high: return "High"
         }
     }
-    
+
     var systemImage: String {
         switch self {
         case .low: return "arrow.down.circle"
@@ -91,7 +91,7 @@ enum ProjectPriority: Int, Codable, CaseIterable, Comparable {
         case .high: return "exclamationmark.circle"
         }
     }
-    
+
     var color: Color {
         switch self {
         case .low: return .blue
@@ -99,7 +99,7 @@ enum ProjectPriority: Int, Codable, CaseIterable, Comparable {
         case .high: return .red
         }
     }
-    
+
     static func < (lhs: ProjectPriority, rhs: ProjectPriority) -> Bool {
         lhs.rawValue < rhs.rawValue
     }
@@ -113,7 +113,7 @@ enum ProjectStatus: String, Codable, CaseIterable {
     case inProgress = "In Progress"
     case completed = "Completed"
     case cancelled = "Cancelled"
-    
+
     var systemImage: String {
         switch self {
         case .planning: return "lightbulb"
@@ -129,14 +129,14 @@ enum ProjectStatus: String, Codable, CaseIterable {
 
 @Model
 final class ProjectContact {
-    var id: UUID
+    var id: UUID = UUID()
     var project: RepairProject?
     var provider: ServiceProvider?
-    var contactDate: Date
-    var method: ContactMethod
-    var notes: String
-    var wasHired: Bool
-    
+    var contactDate: Date = Date()
+    var method: ContactMethod = ContactMethod.phone
+    var notes: String = ""
+    var wasHired: Bool = false
+
     init(project: RepairProject, provider: ServiceProvider, contactDate: Date = Date(), method: ContactMethod = .phone, notes: String = "") {
         self.id = UUID()
         self.project = project
@@ -158,15 +158,15 @@ enum ContactMethod: String, Codable, CaseIterable {
 
 @Model
 final class Quote {
-    var id: UUID
+    var id: UUID = UUID()
     var project: RepairProject?
     var provider: ServiceProvider?
-    var amount: Double
-    var quoteDate: Date
+    var amount: Double = 0
+    var quoteDate: Date = Date()
     var validUntil: Date?
-    var details: String
-    var wasAccepted: Bool
-    
+    var details: String = ""
+    var wasAccepted: Bool = false
+
     init(project: RepairProject, provider: ServiceProvider, amount: Double, quoteDate: Date = Date()) {
         self.id = UUID()
         self.project = project
@@ -273,16 +273,16 @@ struct ProjectWorkDate: Codable, Identifiable {
 
 @Model
 final class Invoice {
-    var id: UUID
+    var id: UUID = UUID()
     var project: RepairProject?
     var provider: ServiceProvider?
-    var amount: Double
-    var invoiceDate: Date
+    var amount: Double = 0
+    var invoiceDate: Date = Date()
     var dueDate: Date?
     var paidDate: Date?
-    var isPaid: Bool
-    var details: String
-    
+    var isPaid: Bool = false
+    var details: String = ""
+
     init(project: RepairProject, provider: ServiceProvider, amount: Double, invoiceDate: Date = Date()) {
         self.id = UUID()
         self.project = project

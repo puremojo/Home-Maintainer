@@ -10,21 +10,23 @@ import SwiftData
 
 @Model
 final class Appliance {
-    var id: UUID
-    var name: String
-    var type: ApplianceType
-    var manufacturer: String
-    var modelNumber: String
+    var id: UUID = UUID()
+    var name: String = ""
+    var type: ApplianceType = ApplianceType.other
+    var manufacturer: String = ""
+    var modelNumber: String = ""
     var purchaseDate: Date?
     var warrantyExpiration: Date?
-    var notes: String
+    var notes: String = ""
     var room: String = ""
-    var createdAt: Date
+    var createdAt: Date = Date()
     var documents: [ApplianceDocument]?
     @Relationship(deleteRule: .cascade, inverse: \AppliancePhoto.appliance)
     var photos: [AppliancePhoto]?
     @Relationship(deleteRule: .nullify, inverse: \HomeDocument.linkedAppliance)
     var homeDocuments: [HomeDocument]?
+    @Relationship(inverse: \MaintenanceTask.appliance)
+    var maintenanceTasks: [MaintenanceTask]?
     var home: Home?
 
     init(name: String, type: ApplianceType, manufacturer: String = "", modelNumber: String = "") {
@@ -70,9 +72,9 @@ final class Appliance {
 /// SwiftData's external storage and can grow independently of the appliance row.
 @Model
 final class AppliancePhoto {
-    var id: UUID
+    var id: UUID = UUID()
     @Attribute(.externalStorage) var imageData: Data?
-    var createdAt: Date
+    var createdAt: Date = Date()
     var appliance: Appliance?
 
     init(imageData: Data? = nil) {
@@ -115,7 +117,7 @@ struct ApplianceDocument: Codable, Identifiable {
     }
 
     var displayName: String { title.isEmpty ? name : title }
-    
+
     var fileExtension: String {
         if contentType.contains("pdf") {
             return "pdf"
@@ -127,7 +129,7 @@ struct ApplianceDocument: Codable, Identifiable {
             return "file"
         }
     }
-    
+
     var systemImage: String {
         switch fileExtension {
         case "pdf":
@@ -153,7 +155,7 @@ enum ApplianceType: String, Codable, CaseIterable {
     case waterHeater = "Water Heater"
     case garbageDisposal = "Garbage Disposal"
     case other = "Other"
-    
+
     var systemImage: String {
         switch self {
         case .refrigerator: return "refrigerator"

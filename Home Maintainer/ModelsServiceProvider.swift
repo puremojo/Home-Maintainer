@@ -10,17 +10,17 @@ import SwiftData
 
 @Model
 final class ServiceProvider {
-    var id: UUID
-    var name: String
-    var category: ServiceCategory
-    var phoneNumber: String
-    var email: String
-    var address: String
-    var website: String
-    var notes: String
-    var isFavorite: Bool
-    var rating: Int // 0-5 stars (user's personal rating)
-    var createdAt: Date
+    var id: UUID = UUID()
+    var name: String = ""
+    var category: ServiceCategory = ServiceCategory.other
+    var phoneNumber: String = ""
+    var email: String = ""
+    var address: String = ""
+    var website: String = ""
+    var notes: String = ""
+    var isFavorite: Bool = false
+    var rating: Int = 0 // 0-5 stars (user's personal rating)
+    var createdAt: Date = Date()
     var home: Home?
     // Google Places data (populated when added via search)
     var googlePlaceID: String?
@@ -28,6 +28,11 @@ final class ServiceProvider {
     var googlePriceLevel: String?
     var weekdayHours: [String]?
     var businessTypes: [String]?
+    // Inverse relationships required for CloudKit compatibility
+    @Relationship(inverse: \Invoice.provider) var invoices: [Invoice]?
+    @Relationship(inverse: \ProjectContact.provider) var projectContacts: [ProjectContact]?
+    @Relationship(inverse: \Quote.provider) var quotes: [Quote]?
+    @Relationship(inverse: \RepairProject.hiredProvider) var hiredProjects: [RepairProject]?
 
     init(name: String, category: ServiceCategory, phoneNumber: String = "", email: String = "") {
         self.id = UUID()
