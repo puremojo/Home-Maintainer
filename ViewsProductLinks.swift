@@ -183,17 +183,27 @@ struct ProductLinkDisplayRow: View {
             }
 
             if let imageData = product.imageData, let uiImage = UIImage(data: imageData) {
-                Image(uiImage: uiImage)
-                    .resizable()
-                    .scaledToFit()
-                    .frame(maxHeight: 200)
-                    .clipShape(RoundedRectangle(cornerRadius: 8))
-                    .onTapGesture {
-                        showingFullImage = true
+                if let url = product.url {
+                    Link(destination: url) {
+                        Image(uiImage: uiImage)
+                            .resizable()
+                            .scaledToFit()
+                            .frame(maxHeight: 200)
+                            .clipShape(RoundedRectangle(cornerRadius: 8))
                     }
-                    .fullScreenCover(isPresented: $showingFullImage) {
-                        FullScreenImageView(uiImage: uiImage)
-                    }
+                } else {
+                    Image(uiImage: uiImage)
+                        .resizable()
+                        .scaledToFit()
+                        .frame(maxHeight: 200)
+                        .clipShape(RoundedRectangle(cornerRadius: 8))
+                        .onTapGesture {
+                            showingFullImage = true
+                        }
+                        .fullScreenCover(isPresented: $showingFullImage) {
+                            FullScreenImageView(uiImage: uiImage)
+                        }
+                }
             }
         }
     }

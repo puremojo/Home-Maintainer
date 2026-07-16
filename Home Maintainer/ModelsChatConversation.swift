@@ -15,7 +15,7 @@ final class ChatConversation {
     var title: String = "New Chat"
     var createdAt: Date = Date()
     var lastMessageAt: Date = Date()
-    @Relationship(deleteRule: .cascade) var messages: [ChatMessageData]?
+    @Relationship(deleteRule: .cascade, inverse: \ChatMessageData.conversation) var messages: [ChatMessageData]?
     /// UUID of the associated Home. Plain attribute (not a relationship) so this model
     /// stays outside the CloudKit zone share when a Home is shared with other users.
     var homeID: UUID?
@@ -55,7 +55,7 @@ final class ChatMessageData {
     var id: UUID = UUID()
     var role: String = "user" // Store as String instead of enum for SwiftData
     var content: String = ""
-    @Relationship(deleteRule: .cascade) var imageRecords: [ChatImageData]?
+    @Relationship(deleteRule: .cascade, inverse: \ChatImageData.message) var imageRecords: [ChatImageData]?
     var timestamp: Date = Date()
     var conversation: ChatConversation?
 

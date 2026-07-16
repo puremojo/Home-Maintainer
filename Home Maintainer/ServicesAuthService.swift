@@ -58,6 +58,13 @@ class AuthService {
     private var subscriptionListener: ListenerRegistration?
 
     init() {
+        // iOS Keychain data survives app deletion and device backups, so a stale
+        // Firebase token can exist on a fresh install and let the user past the
+        // sign-in screen with an invalid session. Force sign-out once per fresh
+        // install (UserDefaults is cleared on reinstall; Keychain is not).
+        if !UserDefaults.standard.bool(forKey: "hasCompletedSignIn") {
+            try? Auth.auth().signOut()
+        }
         currentUser = Auth.auth().currentUser
         if let user = currentUser {
             startSubscriptionListener(for: user)
@@ -127,6 +134,7 @@ class AuthService {
 
             do {
                 let result = try await Auth.auth().signIn(with: firebaseCredential)
+                UserDefaults.standard.set(true, forKey: "hasCompletedSignIn")
                 await createUserRecordIfNeeded(for: result.user)
             } catch {
                 await MainActor.run { errorMessage = error.localizedDescription }

@@ -27,8 +27,9 @@ struct HomePickerView: View {
     @State private var showingImport = false
     @State private var importError: String?
     @State private var showingImportError = false
-    @State private var cloudSharingController: UICloudSharingController?
-    @State private var showingCloudShare = false
+    @State private var shareURL: URL?
+    @State private var shareHomeName: String = ""
+    @State private var showingShareSheet = false
     @State private var isSharingLoading = false
     @State private var sharingError: String?
     @State private var showingSharingError = false
@@ -100,10 +101,13 @@ struct HomePickerView: View {
             ) { result in
                 handleImport(result: result)
             }
-            .sheet(isPresented: $showingCloudShare) {
-                if let controller = cloudSharingController {
-                    CloudSharingSheet(controller: controller) { showingCloudShare = false }
-                        .ignoresSafeArea()
+            .sheet(isPresented: $showingShareSheet) {
+                if let url = shareURL {
+                    ActivityView(
+                        activityItems: ["\(shareHomeName) is shared using Home Maintainer", url],
+                        subject: "\(shareHomeName) – Home Maintainer Invitation"
+                    )
+                    .ignoresSafeArea()
                 }
             }
             .alert("Sharing Unavailable", isPresented: $showingSharingError) {
@@ -157,12 +161,13 @@ struct HomePickerView: View {
 
     private func shareHome(_ home: Home) {
         isSharingLoading = true
-        cloudSharingService.sharingController(for: home, from: modelContext) { result in
+        cloudSharingService.shareLink(for: home, from: modelContext) { result in
             isSharingLoading = false
             switch result {
-            case .success(let controller):
-                cloudSharingController = controller
-                showingCloudShare = true
+            case .success(let url):
+                shareURL = url
+                shareHomeName = home.name
+                showingShareSheet = true
             case .failure(let error):
                 sharingError = error.localizedDescription
                 showingSharingError = true
@@ -301,9 +306,14 @@ struct HomePickerButton: View {
 
 struct ActivityView: UIViewControllerRepresentable {
     let activityItems: [Any]
+    var subject: String? = nil
 
     func makeUIViewController(context: Context) -> UIActivityViewController {
-        UIActivityViewController(activityItems: activityItems, applicationActivities: nil)
+        let vc = UIActivityViewController(activityItems: activityItems, applicationActivities: nil)
+        if let subject {
+            vc.setValue(subject, forKey: "subject")
+        }
+        return vc
     }
 
     func updateUIViewController(_ uiViewController: UIActivityViewController, context: Context) {}

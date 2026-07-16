@@ -17,10 +17,13 @@ final class RepairProject {
     var category: ServiceCategory = ServiceCategory.other
     var status: ProjectStatus = ProjectStatus.planning
     var priority: ProjectPriority = ProjectPriority.medium
+    @Relationship(deleteRule: .cascade, inverse: \ProjectContact.project)
     var contacts: [ProjectContact]?
+    @Relationship(deleteRule: .cascade, inverse: \Quote.project)
     var quotes: [Quote]?
     @Relationship(deleteRule: .cascade, inverse: \ProductLink.project)
     var products: [ProductLink]?
+    @Relationship(deleteRule: .cascade, inverse: \Invoice.project)
     var invoice: Invoice?
     var hiredProvider: ServiceProvider?
     var startDate: Date?

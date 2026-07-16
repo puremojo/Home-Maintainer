@@ -19,6 +19,7 @@ final class MaintenanceTask {
     var lastCompleted: Date?
     var nextDue: Date?
     var isActive: Bool = true
+    @Relationship(deleteRule: .cascade, inverse: \MaintenanceRecord.task)
     var records: [MaintenanceRecord]?
     var appliance: Appliance?
     @Relationship(deleteRule: .cascade, inverse: \ProductLink.task)

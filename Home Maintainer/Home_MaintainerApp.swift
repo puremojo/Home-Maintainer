@@ -76,7 +76,6 @@ struct Home_MaintainerApp: App {
         do {
             return try ModelContainer(
                 for: schema,
-                migrationPlan: HomeMigrationPlan.self,
                 configurations: [modelConfiguration]
             )
         } catch {

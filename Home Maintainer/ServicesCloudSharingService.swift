@@ -24,6 +24,8 @@ final class CloudSharingService {
     // MARK: - State
 
     private(set) var persistentCloudKitContainer: NSPersistentCloudKitContainer?
+    /// True after CloudKit completes a successful setup or export — required before share(_:to:) works reliably.
+    private(set) var isCloudKitReady = false
     private var eventObserver: NSObjectProtocol?
 
     // MARK: - Init
@@ -36,21 +38,23 @@ final class CloudSharingService {
             object: nil,
             queue: .main
         ) { [weak self] notification in
-            guard self?.persistentCloudKitContainer == nil,
-                  let container = notification.object as? NSPersistentCloudKitContainer
-            else { return }
-            self?.persistentCloudKitContainer = container
-            self?.setupDatabaseSubscriptions(container: container)
-            #if DEBUG
-            DispatchQueue.global(qos: .utility).async {
-                do {
-                    try container.initializeCloudKitSchema(options: [])
-                    print("[CloudSharingService] CloudKit schema initialized")
-                } catch {
-                    print("[CloudSharingService] initializeCloudKitSchema error: \(error)")
-                }
+            guard let self else { return }
+
+            // Capture container on first event.
+            if self.persistentCloudKitContainer == nil,
+               let container = notification.object as? NSPersistentCloudKitContainer {
+                self.persistentCloudKitContainer = container
+                self.setupDatabaseSubscriptions(container: container)
             }
-            #endif
+
+            // Mark ready once a setup or export event succeeds — sharing requires this.
+            if let event = notification.userInfo?[NSPersistentCloudKitContainer.eventNotificationUserInfoKey]
+                    as? NSPersistentCloudKitContainer.Event,
+               event.succeeded,
+               event.type == .setup || event.type == .export {
+                self.isCloudKitReady = true
+                print("[CloudSharingService] CloudKit ready (event type: \(event.type))")
+            }
         }
     }
 
@@ -83,68 +87,74 @@ final class CloudSharingService {
 
     // MARK: - Share a Home
 
-    /// Returns a configured UICloudSharingController for the given home.
-    /// Waits up to 15 seconds for the CloudKit container to initialize before giving up.
-    /// Calls the completion handler on the main thread with the controller, or an error.
-    func sharingController(
+    /// Retrieves (or creates) a CloudKit share link for the given home and returns its URL.
+    /// Waits up to 30 seconds for CloudKit to be ready, then calls the completion on the main thread.
+    func shareLink(
         for home: Home,
         from modelContext: ModelContext,
-        completion: @escaping (Result<UICloudSharingController, Error>) -> Void
+        completion: @escaping (Result<URL, Error>) -> Void
     ) {
         Task { @MainActor in
-            // Wait up to 15 s for the container (fires after first CloudKit sync event).
+            // Wait up to 30 s for the container AND a successful CloudKit setup/export event.
             var ticks = 0
-            while persistentCloudKitContainer == nil, ticks < 30 {
+            while (persistentCloudKitContainer == nil || !isCloudKitReady), ticks < 60 {
                 try? await Task.sleep(nanoseconds: 500_000_000)
                 ticks += 1
             }
 
-            guard let ckContainer = persistentCloudKitContainer else {
+            guard let ckContainer = persistentCloudKitContainer, isCloudKitReady else {
                 completion(.failure(SharingError.containerNotReady))
                 return
             }
 
-            // Access the underlying NSManagedObjectContext via Mirror.
-            guard let nsContext = nsContext(from: modelContext),
-                  let homeObject = try? findManagedObject(id: home.id, entityName: "Home", in: nsContext)
+            guard let homeObject = try? findManagedObject(id: home.id, entityName: "Home", in: ckContainer.viewContext)
             else {
                 completion(.failure(SharingError.objectNotFound))
                 return
             }
 
-            // Check whether this Home already has a share (synchronous throwing API).
+            // Return the existing share URL if this home is already shared.
             if let shares = try? ckContainer.fetchShares(matching: [homeObject.objectID]),
                let existingShare = shares[homeObject.objectID] {
-                let controller = UICloudSharingController(share: existingShare,
-                                                          container: CKContainer(identifier: "iCloud.EstraDOS.Home-Maintainer"))
-                controller.availablePermissions = [.allowReadOnly, .allowReadWrite, .allowPublic]
-                completion(.success(controller))
+                if let url = existingShare.url {
+                    completion(.success(url))
+                } else {
+                    completion(.failure(SharingError.shareURLUnavailable))
+                }
             } else {
-                createShare(for: homeObject, home: home, container: ckContainer, completion: completion)
+                createShareLink(for: homeObject, home: home, container: ckContainer, completion: completion)
             }
         }
     }
 
-    private func createShare(
+    private func createShareLink(
         for homeObject: NSManagedObject,
         home: Home,
         container: NSPersistentCloudKitContainer,
-        completion: @escaping (Result<UICloudSharingController, Error>) -> Void
+        completion: @escaping (Result<URL, Error>) -> Void
     ) {
-        container.share([homeObject], to: nil) { _, share, ckContainer, error in
+        print("[CloudSharingService] Calling share(_:to:) for '\(home.name)' (objectID: \(homeObject.objectID))")
+        container.share([homeObject], to: nil) { _, share, _, error in
+            if let error {
+                print("[CloudSharingService] share(_:to:) error: \(error)")
+            } else {
+                print("[CloudSharingService] share(_:to:) succeeded — share=\(share != nil), url=\(share?.url?.absoluteString ?? "nil")")
+            }
             DispatchQueue.main.async {
                 if let error {
                     completion(.failure(error))
                     return
                 }
-                guard let share, let ckContainer else {
+                guard let share else {
                     completion(.failure(SharingError.shareCreationFailed))
                     return
                 }
                 share[CKShare.SystemFieldKey.title] = home.name as CKRecordValue
-                let controller = UICloudSharingController(share: share, container: ckContainer)
-                controller.availablePermissions = [.allowReadOnly, .allowReadWrite, .allowPublic]
-                completion(.success(controller))
+                if let url = share.url {
+                    completion(.success(url))
+                } else {
+                    completion(.failure(SharingError.shareURLUnavailable))
+                }
             }
         }
     }
@@ -164,19 +174,12 @@ final class CloudSharingService {
 
     // MARK: - Helpers
 
-    private func nsContext(from modelContext: ModelContext) -> NSManagedObjectContext? {
-        let mirror = Mirror(reflecting: modelContext)
-        for child in mirror.children {
-            if let ctx = child.value as? NSManagedObjectContext { return ctx }
-        }
-        return nil
-    }
-
     private func findManagedObject(
         id: UUID, entityName: String, in context: NSManagedObjectContext
     ) throws -> NSManagedObject? {
         let request = NSFetchRequest<NSManagedObject>(entityName: entityName)
-        request.predicate = NSPredicate(format: "id == %@", id as CVarArg)
+        // Use NSUUID (not UUID as CVarArg) to avoid NSKeyedUnarchiveFromData deprecation warning.
+        request.predicate = NSPredicate(format: "id == %@", id as NSUUID)
         request.fetchLimit = 1
         return try context.fetch(request).first
     }
@@ -187,12 +190,14 @@ final class CloudSharingService {
         case containerNotReady
         case objectNotFound
         case shareCreationFailed
+        case shareURLUnavailable
 
         var errorDescription: String? {
             switch self {
-            case .containerNotReady:  return "iCloud sync is still initializing. Please try again in a moment."
-            case .objectNotFound:     return "Could not find this home in the local database."
-            case .shareCreationFailed: return "Failed to create a CloudKit share. Please try again."
+            case .containerNotReady:    return "iCloud sync is still initializing. Please try again in a moment."
+            case .objectNotFound:       return "Could not find this home in the local database."
+            case .shareCreationFailed:  return "Failed to create a CloudKit share. Please try again."
+            case .shareURLUnavailable:  return "The share link could not be retrieved. Please try again."
             }
         }
     }
