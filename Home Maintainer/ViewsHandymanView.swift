@@ -46,7 +46,7 @@ struct HandymanView: View {
                     onNewChat: createNewConversation
                 )
                 .navigationDestination(item: $navigationTarget) { target in
-                    ChatView(conversation: target.conversation, scrollToMessageID: target.scrollToMessageID)
+                    ChatView(conversation: target.conversation, scrollToMessageID: target.scrollToMessageID, home: homeManager.currentHome)
                 }
             } else {
                 SetupView()
@@ -62,7 +62,7 @@ struct HandymanView: View {
 
     private func createNewConversation() {
         let conversation = ChatConversation()
-        conversation.home = homeManager.currentHome
+        conversation.homeID = homeManager.currentHome?.id
         modelContext.insert(conversation)
         navigationTarget = ConversationDestination(conversation: conversation, scrollToMessageID: nil)
     }
@@ -84,7 +84,7 @@ struct ConversationListView: View {
 
     private var conversations: [ChatConversation] {
         guard let id = homeID else { return [] }
-        return allConversations.filter { $0.home?.id == id }
+        return allConversations.filter { $0.homeID == id }
     }
 
     private var searchResults: [ChatSearchResult] {
@@ -92,7 +92,7 @@ struct ConversationListView: View {
         let query = searchText
         return allMessages.compactMap { message in
             guard let conversation = message.conversation,
-                  conversation.home?.id == homeID,
+                  conversation.homeID == homeID,
                   message.content.localizedCaseInsensitiveContains(query)
             else { return nil }
             return ChatSearchResult(
@@ -246,8 +246,20 @@ struct ChatView: View {
     @Query private var allHomeDocuments: [HomeDocument]
     @Query private var allProjects: [RepairProject]
 
+    let home: Home?  // locked at navigation time — used for in-memory scoping
     @Bindable var conversation: ChatConversation
     var scrollToMessageID: UUID? = nil
+
+    init(conversation: ChatConversation, scrollToMessageID: UUID? = nil, home: Home?) {
+        self.home = home
+        self.conversation = conversation
+        self.scrollToMessageID = scrollToMessageID
+        // @Query is unfiltered; in-memory filtering in buildContext() uses self.home.
+        // SwiftData #Predicate with optional relationship chaining (home?.id) is unreliable,
+        // so we keep all records and filter explicitly rather than risk silent predicate failures.
+        _tasks = Query(); _appliances = Query(); _providers = Query()
+        _allHomeDocuments = Query(); _allProjects = Query()
+    }
 
     @State private var messages: [ChatMessage] = []
     @State private var scrollTargetID: UUID?
@@ -634,7 +646,7 @@ struct ChatView: View {
             return "Failed to parse search parameters"
         }
 
-        let homeID = homeManager.currentHome?.id
+        let homeID = home?.id
         let q = params.query.lowercased()
         let matched = providers.filter { p in
             guard p.home?.id == homeID else { return false }
@@ -781,7 +793,7 @@ struct ChatView: View {
         }
 
         let result: String = await MainActor.run {
-            let homeID = homeManager.currentHome?.id
+            let homeID = home?.id
             guard let project = allProjects.first(where: {
                 $0.home?.id == homeID && $0.title.localizedCaseInsensitiveContains(params.projectTitle)
             }) else {
@@ -798,15 +810,23 @@ struct ChatView: View {
     }
 
     private func buildContext() -> String {
-        let homeID = homeManager.currentHome?.id
         var parts: [String] = []
 
-        // All @Query results are unfiltered; narrow each to the active home
-        let homeTasks = tasks.filter { $0.home?.id == homeID }
+        // Identify the active home so the AI never confuses it with other homes.
+        if let home = homeManager.currentHome {
+            var homeLabel = "Active Home: \(home.name)"
+            if !home.address.isEmpty { homeLabel += " at \(home.address)" }
+            homeLabel += ". Only discuss data belonging to this home."
+            parts.append(homeLabel)
+        }
+
+        // Filter all @Query results to the active home in-memory.
+        let homeID = home?.id
+        let homeTasks     = tasks.filter { $0.home?.id == homeID }
         let homeAppliances = appliances.filter { $0.home?.id == homeID }
-        let homeProviders = providers.filter { $0.home?.id == homeID }
-        let homeDocuments = allHomeDocuments.filter { $0.home?.id == homeID }
-        let homeProjects = allProjects.filter { $0.home?.id == homeID }
+        let homeProviders  = providers.filter { $0.home?.id == homeID }
+        let homeDocuments  = allHomeDocuments.filter { $0.home?.id == homeID }
+        let homeProjects   = allProjects.filter { $0.home?.id == homeID }
 
         let regularTasks = homeTasks.filter { $0.sourceProject == nil }
         if !regularTasks.isEmpty {

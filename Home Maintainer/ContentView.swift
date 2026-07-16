@@ -97,7 +97,7 @@ struct ContentView: View {
             all.filter { $0.home == nil }.forEach { $0.home = defaultHome }
         }
         if let all = try? modelContext.fetch(FetchDescriptor<ChatConversation>()) {
-            all.filter { $0.home == nil }.forEach { $0.home = defaultHome }
+            all.filter { $0.homeID == nil }.forEach { $0.homeID = defaultHome.id }
         }
 
         try? modelContext.save()

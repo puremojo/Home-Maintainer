@@ -13,8 +13,6 @@ final class Home {
     var address: String
     var createdDate: Date
     var ownerName: String
-    // true when this home was created on this device; false when imported from someone else.
-    // Used to show "You (Owner)" vs the stored owner name without needing CloudKit entitlements.
     var isLocallyCreated: Bool
 
     @Relationship(deleteRule: .cascade, inverse: \MaintenanceTask.home)
@@ -29,8 +27,8 @@ final class Home {
     @Relationship(deleteRule: .cascade, inverse: \RepairProject.home)
     var projects: [RepairProject]?
 
-    @Relationship(deleteRule: .cascade, inverse: \ChatConversation.home)
-    var chatConversations: [ChatConversation]?
+    // chatConversations removed: ChatConversation now stores homeID: UUID? instead of
+    // a SwiftData relationship, keeping chat outside the CloudKit zone share for a Home.
 
     @Relationship(deleteRule: .cascade, inverse: \DocumentSection.home)
     var documentSections: [DocumentSection]?

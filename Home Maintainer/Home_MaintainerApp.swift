@@ -12,12 +12,15 @@ import FirebaseAppCheck
 
 @main
 struct Home_MaintainerApp: App {
+    @UIApplicationDelegateAdaptor(AppDelegate.self) private var appDelegate
+
     @State private var authService: AuthService
     @State private var locationManager = LocationManager()
     @State private var businessSearchService = LocalBusinessSearchService()
     @State private var geminiService: GeminiService
     @State private var subscriptionService: SubscriptionService
     @State private var homeManager = HomeManager()
+    @State private var cloudSharingService: CloudSharingService
 
     init() {
         #if DEBUG
@@ -27,6 +30,10 @@ struct Home_MaintainerApp: App {
         _authService = State(initialValue: AuthService())
         _geminiService = State(initialValue: GeminiService())
         _subscriptionService = State(initialValue: SubscriptionService())
+
+        let sharingService = CloudSharingService()
+        _cloudSharingService = State(initialValue: sharingService)
+        CloudSharingService.shared = sharingService
     }
 
     var sharedModelContainer: ModelContainer = {
@@ -52,11 +59,15 @@ struct Home_MaintainerApp: App {
         let modelConfiguration = ModelConfiguration(
             schema: schema,
             isStoredInMemoryOnly: false,
-            cloudKitDatabase: .automatic
+            cloudKitDatabase: .private("iCloud.EstraDOS.Home-Maintainer")
         )
 
         do {
-            return try ModelContainer(for: schema, configurations: [modelConfiguration])
+            return try ModelContainer(
+                for: schema,
+                migrationPlan: HomeMigrationPlan.self,
+                configurations: [modelConfiguration]
+            )
         } catch {
             // CloudKit unavailable (e.g. simulator without iCloud) — fall back to local-only store.
             let localConfig = ModelConfiguration(schema: schema, isStoredInMemoryOnly: false, cloudKitDatabase: .none)
@@ -77,10 +88,25 @@ struct Home_MaintainerApp: App {
                 .environment(geminiService)
                 .environment(subscriptionService)
                 .environment(homeManager)
+                .environment(cloudSharingService)
                 .onOpenURL { url in
                     homeManager.pendingImportURL = url
                 }
         }
         .modelContainer(sharedModelContainer)
+    }
+}
+
+// MARK: - AppDelegate (routes scene connections to SceneDelegate for CloudKit share acceptance)
+
+class AppDelegate: NSObject, UIApplicationDelegate {
+    func application(
+        _ application: UIApplication,
+        configurationForConnecting connectingSceneSession: UISceneSession,
+        options: UIScene.ConnectionOptions
+    ) -> UISceneConfiguration {
+        let config = UISceneConfiguration(name: nil, sessionRole: connectingSceneSession.role)
+        config.delegateClass = SceneDelegate.self
+        return config
     }
 }

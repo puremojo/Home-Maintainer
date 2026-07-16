@@ -16,8 +16,10 @@ final class ChatConversation {
     var createdAt: Date
     var lastMessageAt: Date
     @Relationship(deleteRule: .cascade) var messages: [ChatMessageData]?
-    var home: Home?
-    
+    /// UUID of the associated Home. Plain attribute (not a relationship) so this model
+    /// stays outside the CloudKit zone share when a Home is shared with other users.
+    var homeID: UUID?
+
     init(title: String = "New Chat") {
         self.id = UUID()
         self.title = title

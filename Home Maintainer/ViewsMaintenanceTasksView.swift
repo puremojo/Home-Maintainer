@@ -162,9 +162,23 @@ struct MaintenanceTasksView: View {
                 closedTasksSection
             case .room:
                 roomSections
+                if activeTasks.isEmpty && closedTasks.isEmpty {
+                    ContentUnavailableView(
+                        "No Tasks",
+                        systemImage: "checklist",
+                        description: Text("Add your first maintenance task to get started")
+                    )
+                }
                 closedTasksSection
             case .frequency:
                 frequencySections
+                if activeTasks.isEmpty && closedTasks.isEmpty {
+                    ContentUnavailableView(
+                        "No Tasks",
+                        systemImage: "checklist",
+                        description: Text("Add your first maintenance task to get started")
+                    )
+                }
                 closedTasksSection
             case .fromProjects:
                 fromProjectsSections

@@ -31,6 +31,8 @@
 	<string>$(MARKETING_VERSION)</string>
 	<key>CFBundleVersion</key>
 	<string>$(CURRENT_PROJECT_VERSION)</string>
+	<key>CKSharingSupported</key>
+	<true/>
 	<key>NSCalendarsFullAccessUsageDescription</key>
 	<string>Home Maintainer uses your calendar to schedule work dates and maintenance reminders.</string>
 	<key>NSCalendarsUsageDescription</key>

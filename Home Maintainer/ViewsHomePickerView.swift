@@ -21,13 +21,17 @@ struct HomePickerView: View {
     @Environment(HomeManager.self) private var homeManager
     @Query(sort: \Home.createdDate) private var homes: [Home]
 
+    @Environment(CloudSharingService.self) private var cloudSharingService
+
     @State private var showingAddHome = false
     @State private var showingImport = false
     @State private var importError: String?
     @State private var showingImportError = false
-    @State private var homeToShare: Home?
-    @State private var shareURL: URL?
-    @State private var shareItem: HomeSharingItem?
+    @State private var cloudSharingController: UICloudSharingController?
+    @State private var showingCloudShare = false
+    @State private var isSharingLoading = false
+    @State private var sharingError: String?
+    @State private var showingSharingError = false
     @State private var homeToDelete: Home?
     @State private var showingDeleteConfirmation = false
 
@@ -59,6 +63,21 @@ struct HomePickerView: View {
             }
             .navigationTitle("Your Homes")
             .navigationBarTitleDisplayMode(.inline)
+            .overlay {
+                if isSharingLoading {
+                    ZStack {
+                        Color.black.opacity(0.2).ignoresSafeArea()
+                        VStack(spacing: 12) {
+                            ProgressView()
+                            Text("Connecting to iCloud…")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                        }
+                        .padding(20)
+                        .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 12))
+                    }
+                }
+            }
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
                     Button("Done") { dismiss() }
@@ -81,9 +100,16 @@ struct HomePickerView: View {
             ) { result in
                 handleImport(result: result)
             }
-            .sheet(item: $shareItem) { item in
-                ActivityView(activityItems: [item.url])
-                    .ignoresSafeArea()
+            .sheet(isPresented: $showingCloudShare) {
+                if let controller = cloudSharingController {
+                    CloudSharingSheet(controller: controller) { showingCloudShare = false }
+                        .ignoresSafeArea()
+                }
+            }
+            .alert("Sharing Unavailable", isPresented: $showingSharingError) {
+                Button("OK") {}
+            } message: {
+                Text(sharingError ?? "Could not prepare share. Please try again.")
             }
             .confirmationDialog(
                 "Delete \"\(homeToDelete?.name ?? "")\"?",
@@ -123,20 +149,24 @@ struct HomePickerView: View {
                 Label("Import Shared Home", systemImage: "square.and.arrow.down")
             }
         } footer: {
-            Text("Import a home that was shared with you as a .homemaintainer file.")
+            Text("Import a home from a .homemaintainer file, or accept a CloudKit invitation by tapping the share link sent to you.")
         }
     }
 
     // MARK: - Actions
 
     private func shareHome(_ home: Home) {
-        do {
-            let data = try HomeExportService.export(home: home)
-            let url = try HomeExportService.writeTempFile(data: data, homeName: home.name)
-            shareItem = HomeSharingItem(url: url)
-        } catch {
-            importError = "Could not export home: \(error.localizedDescription)"
-            showingImportError = true
+        isSharingLoading = true
+        cloudSharingService.sharingController(for: home, from: modelContext) { result in
+            isSharingLoading = false
+            switch result {
+            case .success(let controller):
+                cloudSharingController = controller
+                showingCloudShare = true
+            case .failure(let error):
+                sharingError = error.localizedDescription
+                showingSharingError = true
+            }
         }
     }
 
@@ -268,11 +298,6 @@ struct HomePickerButton: View {
 }
 
 // MARK: - Helpers
-
-struct HomeSharingItem: Identifiable {
-    let id = UUID()
-    let url: URL
-}
 
 struct ActivityView: UIViewControllerRepresentable {
     let activityItems: [Any]
