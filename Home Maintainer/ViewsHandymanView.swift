@@ -352,7 +352,8 @@ struct ChatView: View {
             
             // Input Bar
             VStack(spacing: 0) {
-                HStack(spacing: 12) {
+                Divider()
+                HStack(alignment: .bottom, spacing: 10) {
                     // Attachment buttons
                     Menu {
                         Button {
@@ -360,7 +361,7 @@ struct ChatView: View {
                         } label: {
                             Label("Take Photo", systemImage: "camera")
                         }
-                        
+
                         Button {
                             showingImagePicker = true
                         } label: {
@@ -372,12 +373,21 @@ struct ChatView: View {
                             .foregroundStyle(.blue)
                     }
                     .disabled(isLoading)
-                    
+                    .padding(.bottom, 7)
+
                     TextField("Ask about your home...", text: $inputText, axis: .vertical)
-                        .textFieldStyle(.roundedBorder)
                         .lineLimit(1...4)
                         .disabled(isLoading)
-                    
+                        .padding(.horizontal, 12)
+                        .padding(.vertical, 8)
+                        .frame(minHeight: 36)
+                        .background(Color(.secondarySystemBackground))
+                        .clipShape(RoundedRectangle(cornerRadius: 18))
+                        .overlay(
+                            RoundedRectangle(cornerRadius: 18)
+                                .stroke(Color(.systemGray3), lineWidth: 1)
+                        )
+
                     Button {
                         sendMessage()
                     } label: {
@@ -386,8 +396,10 @@ struct ChatView: View {
                             .foregroundStyle((inputText.isEmpty && selectedImages.isEmpty) ? .gray : .blue)
                     }
                     .disabled((inputText.isEmpty && selectedImages.isEmpty) || isLoading)
+                    .padding(.bottom, 7)
                 }
-                .padding()
+                .padding(.horizontal)
+                .padding(.vertical, 8)
             }
             .background(Color(.systemBackground))
         }

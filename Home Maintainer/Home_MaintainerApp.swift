@@ -22,6 +22,11 @@ struct Home_MaintainerApp: App {
     @State private var homeManager = HomeManager()
     @State private var cloudSharingService: CloudSharingService
 
+    // Stored without a default value so it can be initialized in init() after
+    // CloudSharingService registers its notification observer. This ensures the
+    // NSPersistentCloudKitContainer.eventChangedNotification is never missed.
+    let sharedModelContainer: ModelContainer
+
     init() {
         #if DEBUG
         AppCheck.setAppCheckProviderFactory(AppCheckDebugProviderFactory())
@@ -33,12 +38,16 @@ struct Home_MaintainerApp: App {
         _geminiService = State(initialValue: GeminiService())
         _subscriptionService = State(initialValue: SubscriptionService())
 
+        // Register the CloudSharingService observer BEFORE creating the ModelContainer,
+        // so the eventChangedNotification is captured even when CloudKit is already warm.
         let sharingService = CloudSharingService()
         _cloudSharingService = State(initialValue: sharingService)
         CloudSharingService.shared = sharingService
+
+        sharedModelContainer = Self.makeModelContainer()
     }
 
-    var sharedModelContainer: ModelContainer = {
+    private static func makeModelContainer() -> ModelContainer {
         let schema = Schema([
             Home.self,
             MaintenanceTask.self,
@@ -79,7 +88,7 @@ struct Home_MaintainerApp: App {
                 fatalError("Could not create ModelContainer: \(error)")
             }
         }
-    }()
+    }
 
     var body: some Scene {
         WindowGroup {

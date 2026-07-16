@@ -199,8 +199,6 @@ struct GooglePlaceRow: View {
     let userLocation: CLLocation?
     let home: Home?
 
-    @State private var showingAddConfirmation = false
-
     private var isAlreadyAdded: Bool {
         allProviders.contains { $0.googlePlaceID == place.id || $0.name.lowercased() == place.name.lowercased() }
     }
@@ -297,7 +295,7 @@ struct GooglePlaceRow: View {
                             .foregroundStyle(.secondary)
                     }
                 } else {
-                    Button { showingAddConfirmation = true } label: {
+                    Button { addProvider() } label: {
                         Image(systemName: "plus.circle.fill")
                             .font(.title2)
                             .foregroundStyle(.blue)
@@ -322,10 +320,6 @@ struct GooglePlaceRow: View {
             }
         }
         .padding(.vertical, 4)
-        .confirmationDialog("Add \(place.name) to your providers?", isPresented: $showingAddConfirmation) {
-            Button("Add Provider") { addProvider() }
-            Button("Cancel", role: .cancel) {}
-        }
     }
 
     private func addProvider() {
