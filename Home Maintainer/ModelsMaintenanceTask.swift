@@ -32,6 +32,11 @@ final class MaintenanceTask {
     var taskDocuments: [TaskDocument]?
     var createdAt: Date = Date()
     var home: Home?
+    // Scalar mirrors of relationship IDs. Accessing @Relationship properties on
+    // shared-store objects triggers ModelContext.fulfill which crashes; all
+    // membership checks must use these scalars instead.
+    var homeIDString: String? = nil
+    var sourceProjectIDString: String? = nil
     var sourceProject: RepairProject?
 
     // Decoded from the scalar frequencyEncoded — safe to access on shared-store objects.

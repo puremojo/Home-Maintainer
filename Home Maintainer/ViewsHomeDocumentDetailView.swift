@@ -474,6 +474,7 @@ struct AddHomeDocumentView: View {
         doc.linkedProjectIDs = linkedProjectIDs
         doc.section = linkedAppliance == nil ? section : nil
         doc.home = home
+        doc.homeIDString = home?.id.uuidString
         modelContext.insert(doc)
         dismiss()
     }

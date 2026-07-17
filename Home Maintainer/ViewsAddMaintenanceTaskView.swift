@@ -100,6 +100,7 @@ struct AddMaintenanceTaskView: View {
             room: room
         )
         task.home = home
+        task.homeIDString = home?.id.uuidString
         modelContext.insert(task)
 
         for draft in productDrafts where !draft.isEmpty {

@@ -159,6 +159,7 @@ struct AddApplianceView: View {
         appliance.notes = notes
         appliance.room = room
         appliance.home = home
+        appliance.homeIDString = home?.id.uuidString
 
         modelContext.insert(appliance)
 

@@ -11,6 +11,7 @@ import SwiftData
 struct MaintenanceTaskDetailView: View {
     @Environment(\.modelContext) private var modelContext
     @Environment(NavigationCoordinator.self) private var coordinator
+    @Environment(CloudSharingService.self) private var cloudSharingService
     @Query private var allAppliances: [Appliance]
     @Query private var allHomeDocuments: [HomeDocument]
     @Bindable var task: MaintenanceTask
@@ -24,7 +25,16 @@ struct MaintenanceTaskDetailView: View {
     @State private var selectedTaskDocument: TaskDocument?
     @State private var selectedLinkedHomeDocument: HomeDocument?
 
-    private var isProjectSubTask: Bool { task.sourceProject != nil }
+    // Use the scalar mirror — accessing task.sourceProject directly on a shared-store
+    // object triggers ModelContext.fulfill which crashes.
+    private var isProjectSubTask: Bool { task.sourceProjectIDString != nil }
+
+    // True when this task lives in the shared CloudKit store. Relationship properties
+    // (appliance, records, products, sourceProject object) cannot be accessed on such
+    // objects — only scalar properties and Codable blobs are safe.
+    private var isSharedTask: Bool {
+        cloudSharingService.isInSharedStore(task.persistentModelID)
+    }
 
     private var isRepeating: Bool {
         if case .once = task.safeFrequency { return false }
@@ -44,7 +54,12 @@ struct MaintenanceTaskDetailView: View {
 
     var body: some View {
         List {
-            if isProjectSubTask {
+            // Shared-store tasks must be handled first — accessing any relationship
+            // property (appliance, records, products, sourceProject object) on a
+            // shared-store object crashes via ModelContext.fulfill.
+            if isSharedTask {
+                sharedTaskSections
+            } else if isProjectSubTask {
                 subTaskSections
             } else {
                 maintenanceTaskSections
@@ -53,7 +68,7 @@ struct MaintenanceTaskDetailView: View {
         .navigationTitle(task.name)
         .navigationBarTitleDisplayMode(.inline)
         .toolbar {
-            if !isProjectSubTask {
+            if !isProjectSubTask && !isSharedTask {
                 ToolbarItem(placement: .primaryAction) {
                     Button("Edit") { showingEditTask = true }
                 }
@@ -91,6 +106,54 @@ struct MaintenanceTaskDetailView: View {
                 data: doc.attachmentData ?? Data(),
                 contentType: doc.attachmentContentType ?? ""
             )
+        }
+    }
+
+    // MARK: - Shared-store task view (scalars only — no relationship access)
+
+    @ViewBuilder
+    private var sharedTaskSections: some View {
+        Section {
+            Label("This task is from a shared home. Editing is not available.", systemImage: "person.2.fill")
+                .font(.footnote)
+                .foregroundStyle(.secondary)
+        }
+
+        Section("Details") {
+            LabeledContent("Name", value: task.name)
+            if !task.taskDescription.isEmpty {
+                LabeledContent("Description", value: task.taskDescription)
+            }
+            if !task.room.isEmpty {
+                LabeledContent("Room", value: task.room)
+            }
+            LabeledContent("Frequency", value: task.frequencyDisplayName)
+            if let lastCompleted = task.lastCompleted {
+                LabeledContent("Last Closed") {
+                    Text(lastCompleted, format: .dateTime.month().day().year())
+                }
+            }
+            if let nextDue = task.nextDue {
+                LabeledContent("Next Due") {
+                    Text(nextDue, format: .dateTime.month().day().year())
+                        .foregroundStyle(task.isOverdue ? .red : .primary)
+                }
+            }
+        }
+
+        Section("Documents") {
+            ForEach(task.taskDocuments ?? []) { document in
+                Button {
+                    selectedTaskDocument = document
+                } label: {
+                    HStack {
+                        Image(systemName: document.systemImage).foregroundStyle(.blue)
+                        Text(document.displayName).font(.subheadline)
+                        Spacer()
+                        Image(systemName: "chevron.right").font(.caption).foregroundStyle(.secondary)
+                    }
+                }
+            }
         }
     }
 

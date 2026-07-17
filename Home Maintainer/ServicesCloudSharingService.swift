@@ -158,6 +158,18 @@ final class CloudSharingService {
         }
     }
 
+    // MARK: - Shared Store Detection
+
+    /// Returns true if the given PersistentIdentifier belongs to the shared CloudKit store.
+    /// Relationship accesses on shared-store objects crash via ModelContext.fulfill because
+    /// SwiftData's ModelContext only knows about the private store. Use this to guard any
+    /// code that touches @Relationship properties on model objects from @Query results.
+    func isInSharedStore(_ identifier: PersistentIdentifier) -> Bool {
+        guard let sharedStore = sharedPersistentStore,
+              let sharedURL = sharedStore.url else { return false }
+        return identifier.storeIdentifier == sharedURL.absoluteString
+    }
+
     // MARK: - Share a Home
 
     /// Retrieves (or creates) a CloudKit share link for the given home and returns its URL.

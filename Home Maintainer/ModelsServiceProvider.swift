@@ -22,6 +22,9 @@ final class ServiceProvider {
     var rating: Int = 0 // 0-5 stars (user's personal rating)
     var createdAt: Date = Date()
     var home: Home?
+    // Scalar mirror of home?.id.uuidString — safe to compare without triggering
+    // ModelContext.fulfill on shared-store objects.
+    var homeIDString: String? = nil
     // Google Places data (populated when added via search)
     var googlePlaceID: String?
     var googleRating: Double?

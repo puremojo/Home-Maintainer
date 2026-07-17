@@ -336,6 +336,7 @@ struct ApplianceDetailView: View {
                 room: appliance.room
             )
             task.home = homeManager.currentHome
+            task.homeIDString = homeManager.currentHome?.id.uuidString
             modelContext.insert(task)
 
             for product in suggestion.products {

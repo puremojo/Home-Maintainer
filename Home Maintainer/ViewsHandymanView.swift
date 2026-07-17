@@ -240,6 +240,7 @@ struct ChatView: View {
     @Environment(HomeManager.self) private var homeManager
     @Environment(LocationManager.self) private var locationManager
     @Environment(LocalBusinessSearchService.self) private var searchService
+    @Environment(CloudSharingService.self) private var cloudSharingService
     @Query private var tasks: [MaintenanceTask]
     @Query private var appliances: [Appliance]
     @Query private var providers: [ServiceProvider]
@@ -567,6 +568,7 @@ struct ChatView: View {
                 frequency: frequency
             )
             task.home = homeManager.currentHome
+            task.homeIDString = homeManager.currentHome?.id.uuidString
             modelContext.insert(task)
         }
         
@@ -600,6 +602,7 @@ struct ChatView: View {
                 manufacturer: params.manufacturer ?? ""
             )
             appliance.home = homeManager.currentHome
+            appliance.homeIDString = homeManager.currentHome?.id.uuidString
             modelContext.insert(appliance)
         }
         
@@ -710,6 +713,7 @@ struct ChatView: View {
             provider.weekdayHours = place.weekdayDescriptions
             provider.businessTypes = place.types.isEmpty ? nil : place.types
             provider.home = homeManager.currentHome
+            provider.homeIDString = homeManager.currentHome?.id.uuidString
             modelContext.insert(provider)
         }
 
@@ -750,6 +754,7 @@ struct ChatView: View {
             if let rating = params.rating { provider.googleRating = rating }
 
             provider.home = homeManager.currentHome
+            provider.homeIDString = homeManager.currentHome?.id.uuidString
             modelContext.insert(provider)
         }
         
@@ -792,6 +797,7 @@ struct ChatView: View {
                 priority: priority
             )
             project.home = homeManager.currentHome
+            project.homeIDString = homeManager.currentHome?.id.uuidString
             modelContext.insert(project)
         }
 
@@ -805,16 +811,18 @@ struct ChatView: View {
         }
 
         let result: String = await MainActor.run {
-            let homeID = home?.id
+            let homeIDStr = home?.id.uuidString
             guard let project = allProjects.first(where: {
-                $0.home?.id == homeID && $0.title.localizedCaseInsensitiveContains(params.projectTitle)
+                $0.homeIDString == homeIDStr && $0.title.localizedCaseInsensitiveContains(params.projectTitle)
             }) else {
                 return "Could not find project '\(params.projectTitle)' for this home"
             }
 
             let task = MaintenanceTask(name: params.name, description: params.description, frequency: .once)
             task.home = homeManager.currentHome
+            task.homeIDString = homeManager.currentHome?.id.uuidString
             task.sourceProject = project
+            task.sourceProjectIDString = project.id.uuidString
             modelContext.insert(task)
             return "✅ Added sub-task '\(params.name)' to project '\(project.title)'"
         }
@@ -832,17 +840,17 @@ struct ChatView: View {
             parts.append(homeLabel)
         }
 
-        // Filter all @Query results to the active home in-memory.
-        // Guard isDeleted first so ModelContext.fulfill is never called on
-        // objects whose shared-store backing has been invalidated.
-        let homeID = home?.id
-        let homeTasks      = tasks.filter { !$0.isDeleted && $0.home?.id == homeID }
-        let homeAppliances = appliances.filter { !$0.isDeleted && $0.home?.id == homeID }
-        let homeProviders  = providers.filter { !$0.isDeleted && $0.home?.id == homeID }
-        let homeDocuments  = allHomeDocuments.filter { !$0.isDeleted && $0.home?.id == homeID }
-        let homeProjects   = allProjects.filter { !$0.isDeleted && $0.home?.id == homeID }
+        // Filter all @Query results to the active home in-memory using the scalar
+        // homeIDString mirror — accessing the home relationship directly on
+        // shared-store objects triggers ModelContext.fulfill which crashes.
+        let homeIDStr = home?.id.uuidString
+        let homeTasks      = tasks.filter { !$0.isDeleted && $0.homeIDString == homeIDStr }
+        let homeAppliances = appliances.filter { !$0.isDeleted && $0.homeIDString == homeIDStr }
+        let homeProviders  = providers.filter { !$0.isDeleted && $0.homeIDString == homeIDStr }
+        let homeDocuments  = allHomeDocuments.filter { !$0.isDeleted && $0.homeIDString == homeIDStr }
+        let homeProjects   = allProjects.filter { !$0.isDeleted && $0.homeIDString == homeIDStr }
 
-        let regularTasks = homeTasks.filter { $0.sourceProject == nil }
+        let regularTasks = homeTasks.filter { $0.sourceProjectIDString == nil }
         if !regularTasks.isEmpty {
             let names = regularTasks.prefix(5).map { $0.name }
             parts.append("Maintenance Tasks: " + names.joined(separator: ", "))
@@ -867,13 +875,17 @@ struct ChatView: View {
                 if let cost = project.totalCost {
                     info += " — Total cost: \(cost.formatted(.currency(code: "USD")))"
                 }
-                let subTasks = project.subTasks ?? []
-                if !subTasks.isEmpty {
-                    let subTaskList = subTasks.map { task -> String in
-                        let done = task.lastCompleted != nil ? " (done)" : ""
-                        return task.name + done
-                    }.joined(separator: ", ")
-                    info += " | Sub-tasks: \(subTaskList)"
+                // Skip sub-task details for shared-store projects to avoid
+                // ModelContext.fulfill crash on the subTasks relationship.
+                if !cloudSharingService.isInSharedStore(project.persistentModelID) {
+                    let subTasks = project.subTasks ?? []
+                    if !subTasks.isEmpty {
+                        let subTaskList = subTasks.map { task -> String in
+                            let done = task.lastCompleted != nil ? " (done)" : ""
+                            return task.name + done
+                        }.joined(separator: ", ")
+                        info += " | Sub-tasks: \(subTaskList)"
+                    }
                 }
                 let workDates = project.workDates ?? []
                 if !workDates.isEmpty {

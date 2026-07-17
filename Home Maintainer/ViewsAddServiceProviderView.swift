@@ -118,6 +118,7 @@ struct AddServiceProviderView: View {
         provider.isFavorite = isFavorite
         provider.rating = rating
         provider.home = home
+        provider.homeIDString = home?.id.uuidString
 
         modelContext.insert(provider)
         dismiss()

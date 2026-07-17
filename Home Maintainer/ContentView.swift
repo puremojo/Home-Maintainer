@@ -28,6 +28,7 @@ struct ContentView: View {
     @State private var coordinator = NavigationCoordinator()
     @State private var shareAcceptErrorMessage: String?
     @AppStorage("frequencyEncodedMigrationDone") private var frequencyMigrationDone = false
+    @AppStorage("homeIDStringMigrationDone") private var homeIDStringMigrationDone = false
 
     var body: some View {
         if !authService.isSignedIn {
@@ -65,6 +66,7 @@ struct ContentView: View {
             // Run fixup if container is already available when view first appears.
             if cloudSharingService.persistentCloudKitContainer != nil {
                 fixupFrequencyEncoded()
+                fixupHomeIDStrings()
             }
         }
         .onChange(of: homes) { _, newHomes in
@@ -76,6 +78,7 @@ struct ContentView: View {
             if isReady {
                 fixupOwnerNames()
                 fixupFrequencyEncoded()
+                fixupHomeIDStrings()
             }
         }
         .onChange(of: cloudSharingService.shareAcceptError) { _, message in
@@ -110,17 +113,30 @@ struct ContentView: View {
         modelContext.insert(defaultHome)
 
         // Filter in memory to avoid CloudKit-incompatible nil-relationship predicates.
+        let homeIDStr = defaultHome.id.uuidString
         if let all = try? modelContext.fetch(FetchDescriptor<MaintenanceTask>()) {
-            all.filter { $0.home == nil }.forEach { $0.home = defaultHome }
+            all.filter { $0.home == nil }.forEach {
+                $0.home = defaultHome
+                $0.homeIDString = homeIDStr
+            }
         }
         if let all = try? modelContext.fetch(FetchDescriptor<Appliance>()) {
-            all.filter { $0.home == nil }.forEach { $0.home = defaultHome }
+            all.filter { $0.home == nil }.forEach {
+                $0.home = defaultHome
+                $0.homeIDString = homeIDStr
+            }
         }
         if let all = try? modelContext.fetch(FetchDescriptor<ServiceProvider>()) {
-            all.filter { $0.home == nil }.forEach { $0.home = defaultHome }
+            all.filter { $0.home == nil }.forEach {
+                $0.home = defaultHome
+                $0.homeIDString = homeIDStr
+            }
         }
         if let all = try? modelContext.fetch(FetchDescriptor<RepairProject>()) {
-            all.filter { $0.home == nil }.forEach { $0.home = defaultHome }
+            all.filter { $0.home == nil }.forEach {
+                $0.home = defaultHome
+                $0.homeIDString = homeIDStr
+            }
         }
         if let all = try? modelContext.fetch(FetchDescriptor<ChatConversation>()) {
             all.filter { $0.homeID == nil }.forEach { $0.homeID = defaultHome.id }
@@ -173,6 +189,60 @@ struct ContentView: View {
 
         if changed { try? ctx.save() }
         frequencyMigrationDone = true
+    }
+
+    /// One-time backfill that reads each model's `home` relationship via CoreData's
+    /// NSManagedObject.value(forKey:) — bypassing ModelContext.fulfill — then writes
+    /// the home UUID into the new scalar `homeIDString` attribute. Also backfills
+    /// `sourceProjectIDString` on MaintenanceTask. Skips shared-store objects
+    /// (their home relationship may not be safely accessible).
+    private func fixupHomeIDStrings() {
+        guard !homeIDStringMigrationDone,
+              let container = cloudSharingService.persistentCloudKitContainer else { return }
+
+        let ctx = container.viewContext
+        let sharedStore = cloudSharingService.sharedPersistentStore
+        var changed = false
+
+        let homeEntities = [
+            ("MaintenanceTask", "homeIDString"),
+            ("Appliance",       "homeIDString"),
+            ("ServiceProvider", "homeIDString"),
+            ("HomeDocument",    "homeIDString"),
+            ("RepairProject",   "homeIDString"),
+        ]
+
+        for (entityName, key) in homeEntities {
+            let request = NSFetchRequest<NSManagedObject>(entityName: entityName)
+            guard let objects = try? ctx.fetch(request) else { continue }
+            for obj in objects {
+                // Skip shared-store objects — their home relationship may fault unsafely.
+                if let sharedStore, obj.objectID.persistentStore === sharedStore { continue }
+                if let existing = obj.value(forKey: key) as? String, !existing.isEmpty { continue }
+                if let homeObj = obj.value(forKey: "home") as? NSManagedObject,
+                   let homeID = homeObj.value(forKey: "id") as? UUID {
+                    obj.setValue(homeID.uuidString, forKey: key)
+                    changed = true
+                }
+            }
+        }
+
+        // Backfill sourceProjectIDString on MaintenanceTask
+        let taskRequest = NSFetchRequest<NSManagedObject>(entityName: "MaintenanceTask")
+        if let tasks = try? ctx.fetch(taskRequest) {
+            for task in tasks {
+                if let sharedStore, task.objectID.persistentStore === sharedStore { continue }
+                if let existing = task.value(forKey: "sourceProjectIDString") as? String, !existing.isEmpty { continue }
+                if let projObj = task.value(forKey: "sourceProject") as? NSManagedObject,
+                   let projID = projObj.value(forKey: "id") as? UUID {
+                    task.setValue(projID.uuidString, forKey: "sourceProjectIDString")
+                    changed = true
+                }
+            }
+        }
+
+        if changed { try? ctx.save() }
+        homeIDStringMigrationDone = true
     }
 }
 

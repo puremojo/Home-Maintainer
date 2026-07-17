@@ -625,7 +625,9 @@ struct AddProjectSubTaskView: View {
             frequency: .once
         )
         task.home = project.home
+        task.homeIDString = project.homeIDString
         task.sourceProject = project
+        task.sourceProjectIDString = project.id.uuidString
         modelContext.insert(task)
 
         for draft in productDrafts where !draft.isEmpty {

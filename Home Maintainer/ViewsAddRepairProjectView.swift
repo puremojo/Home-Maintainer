@@ -98,6 +98,7 @@ struct AddRepairProjectView: View {
         project.status = status
         project.notes = notes
         project.home = home
+        project.homeIDString = home?.id.uuidString
 
         modelContext.insert(project)
 

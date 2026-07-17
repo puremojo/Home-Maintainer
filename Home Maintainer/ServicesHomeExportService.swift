@@ -237,6 +237,7 @@ enum HomeExportService {
             task.lastCompleted = t.lastCompleted
             task.nextDue = t.nextDue
             task.home = home
+            task.homeIDString = home.id.uuidString
             context.insert(task)
         }
 
@@ -251,6 +252,7 @@ enum HomeExportService {
             appliance.warrantyExpiration = a.warrantyExpiration
             appliance.notes = a.notes
             appliance.home = home
+            appliance.homeIDString = home.id.uuidString
             context.insert(appliance)
         }
 
@@ -267,6 +269,7 @@ enum HomeExportService {
             provider.isFavorite = p.isFavorite
             provider.rating = p.rating
             provider.home = home
+            provider.homeIDString = home.id.uuidString
             context.insert(provider)
         }
 
@@ -280,6 +283,7 @@ enum HomeExportService {
             project.status = proj.status
             project.notes = proj.notes
             project.home = home
+            project.homeIDString = home.id.uuidString
             context.insert(project)
         }
 
@@ -295,6 +299,7 @@ enum HomeExportService {
                 doc.attachmentContentType = docSnap.attachmentContentType
                 doc.section = section
                 doc.home = home
+                doc.homeIDString = home.id.uuidString
                 context.insert(doc)
             }
         }

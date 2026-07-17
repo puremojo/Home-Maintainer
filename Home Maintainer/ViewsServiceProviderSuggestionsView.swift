@@ -337,6 +337,7 @@ struct GooglePlaceRow: View {
         provider.weekdayHours = place.weekdayDescriptions
         provider.businessTypes = place.types.isEmpty ? nil : place.types
         provider.home = home
+        provider.homeIDString = home?.id.uuidString
         modelContext.insert(provider)
     }
 }

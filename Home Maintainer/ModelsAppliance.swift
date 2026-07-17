@@ -28,6 +28,9 @@ final class Appliance {
     @Relationship(inverse: \MaintenanceTask.appliance)
     var maintenanceTasks: [MaintenanceTask]?
     var home: Home?
+    // Scalar mirror of home?.id.uuidString — safe to compare without triggering
+    // ModelContext.fulfill on shared-store objects.
+    var homeIDString: String? = nil
 
     init(name: String, type: ApplianceType, manufacturer: String = "", modelNumber: String = "") {
         self.id = UUID()
