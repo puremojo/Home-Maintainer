@@ -833,12 +833,14 @@ struct ChatView: View {
         }
 
         // Filter all @Query results to the active home in-memory.
+        // Guard isDeleted first so ModelContext.fulfill is never called on
+        // objects whose shared-store backing has been invalidated.
         let homeID = home?.id
-        let homeTasks     = tasks.filter { $0.home?.id == homeID }
-        let homeAppliances = appliances.filter { $0.home?.id == homeID }
-        let homeProviders  = providers.filter { $0.home?.id == homeID }
-        let homeDocuments  = allHomeDocuments.filter { $0.home?.id == homeID }
-        let homeProjects   = allProjects.filter { $0.home?.id == homeID }
+        let homeTasks      = tasks.filter { !$0.isDeleted && $0.home?.id == homeID }
+        let homeAppliances = appliances.filter { !$0.isDeleted && $0.home?.id == homeID }
+        let homeProviders  = providers.filter { !$0.isDeleted && $0.home?.id == homeID }
+        let homeDocuments  = allHomeDocuments.filter { !$0.isDeleted && $0.home?.id == homeID }
+        let homeProjects   = allProjects.filter { !$0.isDeleted && $0.home?.id == homeID }
 
         let regularTasks = homeTasks.filter { $0.sourceProject == nil }
         if !regularTasks.isEmpty {
