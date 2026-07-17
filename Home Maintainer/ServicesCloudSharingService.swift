@@ -96,6 +96,13 @@ final class CloudSharingService {
         ckOptions.databaseScope = .shared
         desc.cloudKitContainerOptions = ckOptions
 
+        // CloudKit's internal batch record import requires a clean context.
+        // Pending changes at this point trigger "Illegal attempt to begin batch processing"
+        // and can invalidate object references, causing downstream crashes.
+        if container.viewContext.hasChanges {
+            try? container.viewContext.save()
+        }
+
         // Calling loadPersistentStores again only loads descriptions not yet in the
         // coordinator — existing stores are returned as-is without re-loading.
         container.persistentStoreDescriptions.append(desc)

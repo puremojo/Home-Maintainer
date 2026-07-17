@@ -8,6 +8,8 @@
 import SwiftUI
 import SwiftData
 
+// MARK: - Outer shell (navigation, toolbar, sheets)
+
 struct MaintenanceTasksView: View {
     @Environment(\.modelContext) private var modelContext
     @Environment(HomeManager.self) private var homeManager
@@ -16,71 +18,6 @@ struct MaintenanceTasksView: View {
     @State private var showingAddTask = false
     @State private var showingHomePicker = false
     @AppStorage("taskSortOption") private var sortOption: TaskSortOption = .upNext
-    private var homeTasks: [MaintenanceTask] {
-        guard let home = homeManager.currentHome else { return [] }
-        // Access home.tasks (to-many, resolved via SQL sub-fetch by CoreData) rather than
-        // filtering a flat @Query by task.home?.id. Faulting the task→home to-one relationship
-        // on objects from the dynamically-added CloudKit shared store hits an assertion in
-        // SwiftData's ModelContext.fulfill and crashes the app.
-        return (home.tasks ?? []).sorted {
-            ($0.nextDue ?? .distantFuture) < ($1.nextDue ?? .distantFuture)
-        }
-    }
-
-    // Regular maintenance tasks (not from projects)
-    private var tasks: [MaintenanceTask] {
-        homeTasks.filter { $0.sourceProject == nil }
-    }
-
-    // Project sub-tasks only
-    private var projectSubTasks: [MaintenanceTask] {
-        homeTasks.filter { $0.sourceProject != nil }
-    }
-
-    var activeTasks: [MaintenanceTask] {
-        tasks.filter { $0.isActive }
-    }
-
-    var closedTasks: [MaintenanceTask] {
-        tasks.filter { !$0.isActive }.sorted { $0.name < $1.name }
-    }
-
-    var overdueTasks: [MaintenanceTask] {
-        activeTasks.filter { $0.isOverdue }
-    }
-
-    var upcomingTasks: [MaintenanceTask] {
-        activeTasks.filter { !$0.isOverdue }
-    }
-
-    var tasksByRoom: [(room: String, tasks: [MaintenanceTask])] {
-        let groups = Dictionary(grouping: activeTasks) { task in
-            task.room.trimmingCharacters(in: .whitespaces).isEmpty ? "No Room" : task.room
-        }
-        return groups
-            .map { (room: $0.key, tasks: $0.value.sorted { $0.name < $1.name }) }
-            .sorted { lhs, rhs in
-                if lhs.room == "No Room" { return false }
-                if rhs.room == "No Room" { return true }
-                return lhs.room.localizedCaseInsensitiveCompare(rhs.room) == .orderedAscending
-            }
-    }
-
-    var tasksByFrequency: [(frequency: TaskFrequency, tasks: [MaintenanceTask])] {
-        let groups = Dictionary(grouping: activeTasks) { $0.frequency }
-        return groups
-            .map { (frequency: $0.key, tasks: $0.value.sorted { ($0.nextDue ?? .distantFuture) < ($1.nextDue ?? .distantFuture) }) }
-            .sorted { $0.frequency.sortOrder < $1.frequency.sortOrder }
-    }
-
-    var projectSubTasksByProject: [(projectTitle: String, tasks: [MaintenanceTask])] {
-        let groups = Dictionary(grouping: projectSubTasks) { task in
-            task.sourceProject?.title ?? "Unknown Project"
-        }
-        return groups
-            .map { (projectTitle: $0.key, tasks: $0.value.sorted { $0.name < $1.name }) }
-            .sorted { $0.projectTitle.localizedCaseInsensitiveCompare($1.projectTitle) == .orderedAscending }
-    }
 
     private var navTitle: String {
         sortOption == .fromProjects ? "Project Sub Tasks" : "Maintenance Tasks"
@@ -89,10 +26,12 @@ struct MaintenanceTasksView: View {
     var body: some View {
         NavigationStack {
             Group {
-                if homeManager.currentHome == nil {
-                    noHomeView
+                if let home = homeManager.currentHome {
+                    // HomeTasksList builds its @Query predicate from homeID in init so the
+                    // filter runs at the SQLite level — no SwiftData relationship faulting.
+                    HomeTasksList(home: home, sortOption: sortOption)
                 } else {
-                    taskList
+                    noHomeView
                 }
             }
             .navigationTitle(navTitle)
@@ -151,8 +90,87 @@ struct MaintenanceTasksView: View {
                 .buttonStyle(.borderedProminent)
         }
     }
+}
 
-    private var taskList: some View {
+// MARK: - Inner list (owns @Query with SQL predicate)
+
+// Splitting into a child view is the SwiftUI pattern for dynamic @Query predicates.
+// The predicate `task.home?.id == homeID` is compiled by #Predicate into a CoreData
+// keypath expression evaluated at the SQLite level — it never calls ModelContext.fulfill,
+// so it is safe for tasks in the dynamically-added CloudKit shared store.
+private struct HomeTasksList: View {
+    let home: Home
+    let sortOption: TaskSortOption
+    @Query private var homeTasks: [MaintenanceTask]
+
+    init(home: Home, sortOption: TaskSortOption) {
+        self.home = home
+        self.sortOption = sortOption
+        let homeID = home.id
+        _homeTasks = Query(
+            filter: #Predicate<MaintenanceTask> { task in
+                task.home?.id == homeID
+            },
+            sort: \MaintenanceTask.nextDue
+        )
+    }
+
+    // Regular maintenance tasks (not from projects)
+    private var tasks: [MaintenanceTask] {
+        homeTasks.filter { $0.sourceProject == nil }
+    }
+
+    // Project sub-tasks only
+    private var projectSubTasks: [MaintenanceTask] {
+        homeTasks.filter { $0.sourceProject != nil }
+    }
+
+    var activeTasks: [MaintenanceTask] {
+        tasks.filter { $0.isActive }
+    }
+
+    var closedTasks: [MaintenanceTask] {
+        tasks.filter { !$0.isActive }.sorted { $0.name < $1.name }
+    }
+
+    var overdueTasks: [MaintenanceTask] {
+        activeTasks.filter { $0.isOverdue }
+    }
+
+    var upcomingTasks: [MaintenanceTask] {
+        activeTasks.filter { !$0.isOverdue }
+    }
+
+    var tasksByRoom: [(room: String, tasks: [MaintenanceTask])] {
+        let groups = Dictionary(grouping: activeTasks) { task in
+            task.room.trimmingCharacters(in: .whitespaces).isEmpty ? "No Room" : task.room
+        }
+        return groups
+            .map { (room: $0.key, tasks: $0.value.sorted { $0.name < $1.name }) }
+            .sorted { lhs, rhs in
+                if lhs.room == "No Room" { return false }
+                if rhs.room == "No Room" { return true }
+                return lhs.room.localizedCaseInsensitiveCompare(rhs.room) == .orderedAscending
+            }
+    }
+
+    var tasksByFrequency: [(frequency: TaskFrequency, tasks: [MaintenanceTask])] {
+        let groups = Dictionary(grouping: activeTasks) { $0.frequency }
+        return groups
+            .map { (frequency: $0.key, tasks: $0.value.sorted { ($0.nextDue ?? .distantFuture) < ($1.nextDue ?? .distantFuture) }) }
+            .sorted { $0.frequency.sortOrder < $1.frequency.sortOrder }
+    }
+
+    var projectSubTasksByProject: [(projectTitle: String, tasks: [MaintenanceTask])] {
+        let groups = Dictionary(grouping: projectSubTasks) { task in
+            task.sourceProject?.title ?? "Unknown Project"
+        }
+        return groups
+            .map { (projectTitle: $0.key, tasks: $0.value.sorted { $0.name < $1.name }) }
+            .sorted { $0.projectTitle.localizedCaseInsensitiveCompare($1.projectTitle) == .orderedAscending }
+    }
+
+    var body: some View {
         List {
             switch sortOption {
             case .upNext:
