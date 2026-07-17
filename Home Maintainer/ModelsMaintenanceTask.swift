@@ -15,7 +15,13 @@ final class MaintenanceTask {
     var name: String = ""
     var taskDescription: String = ""
     var room: String = ""
-    var frequency: TaskFrequency = TaskFrequency.monthly
+    // Scalar backing — String is cached in NSManagedObject and never needs
+    // ModelContext.fulfill, making it safe to read on shared-store objects.
+    var frequencyEncoded: String = "monthly"
+    var frequency: TaskFrequency {
+        get { TaskFrequency.from(encoded: frequencyEncoded) }
+        set { frequencyEncoded = newValue.encoded }
+    }
     var lastCompleted: Date?
     var nextDue: Date?
     var isActive: Bool = true
@@ -137,6 +143,39 @@ enum TaskFrequency: Codable, Hashable, Equatable {
         case .biannually: return "Every 6 Months"
         case .annually: return "Annually"
         case .custom(let days): return "Every \(days) days"
+        }
+    }
+
+    // String encoding used by MaintenanceTask.frequencyEncoded.
+    var encoded: String {
+        switch self {
+        case .once: return "once"
+        case .daily: return "daily"
+        case .weekly: return "weekly"
+        case .biweekly: return "biweekly"
+        case .monthly: return "monthly"
+        case .quarterly: return "quarterly"
+        case .biannually: return "biannually"
+        case .annually: return "annually"
+        case .custom(let days): return "custom:\(days)"
+        }
+    }
+
+    static func from(encoded: String) -> TaskFrequency {
+        switch encoded {
+        case "once": return .once
+        case "daily": return .daily
+        case "weekly": return .weekly
+        case "biweekly": return .biweekly
+        case "monthly": return .monthly
+        case "quarterly": return .quarterly
+        case "biannually": return .biannually
+        case "annually": return .annually
+        default:
+            if encoded.hasPrefix("custom:"), let days = Int(encoded.dropFirst(7)) {
+                return .custom(days: days)
+            }
+            return .monthly
         }
     }
 }
