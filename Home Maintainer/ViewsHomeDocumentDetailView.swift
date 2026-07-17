@@ -176,7 +176,7 @@ struct HomeDocumentDetailView: View {
                         VStack(alignment: .leading, spacing: 2) {
                             Text(task.name)
                                 .font(.subheadline)
-                            Text(task.frequency.displayName)
+                            Text(task.frequencyDisplayName)
                                 .font(.caption)
                                 .foregroundStyle(.secondary)
                         }
@@ -379,7 +379,7 @@ struct AddHomeDocumentView: View {
                         HStack {
                             VStack(alignment: .leading, spacing: 2) {
                                 Text(task.name).font(.subheadline)
-                                Text(task.frequency.displayName).font(.caption).foregroundStyle(.secondary)
+                                Text(task.frequencyDisplayName).font(.caption).foregroundStyle(.secondary)
                             }
                             Spacer()
                             Button(role: .destructive) {
@@ -510,7 +510,7 @@ struct SelectTasksForDocumentView: View {
                                         Text(task.name)
                                             .font(.subheadline)
                                             .foregroundStyle(.primary)
-                                        Text(task.frequency.displayName)
+                                        Text(task.frequencyDisplayName)
                                             .font(.caption)
                                             .foregroundStyle(.secondary)
                                     }

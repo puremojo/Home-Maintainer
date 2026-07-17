@@ -156,7 +156,7 @@ private struct HomeTasksList: View {
     }
 
     var tasksByFrequency: [(frequency: TaskFrequency, tasks: [MaintenanceTask])] {
-        let groups = Dictionary(grouping: activeTasks) { $0.frequency }
+        let groups = Dictionary(grouping: activeTasks) { $0.safeFrequency }
         return groups
             .map { (frequency: $0.key, tasks: $0.value.sorted { ($0.nextDue ?? .distantFuture) < ($1.nextDue ?? .distantFuture) }) }
             .sorted { $0.frequency.sortOrder < $1.frequency.sortOrder }
@@ -349,7 +349,7 @@ struct TaskRow: View {
                 }
 
                 HStack {
-                    Text(task.frequency.displayName)
+                    Text(task.frequencyDisplayName)
                         .font(.caption)
                         .foregroundStyle(.secondary)
 

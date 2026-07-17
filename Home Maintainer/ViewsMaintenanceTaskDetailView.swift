@@ -27,7 +27,7 @@ struct MaintenanceTaskDetailView: View {
     private var isProjectSubTask: Bool { task.sourceProject != nil }
 
     private var isRepeating: Bool {
-        if case .once = task.frequency { return false }
+        if case .once = task.safeFrequency { return false }
         return true
     }
 
@@ -153,7 +153,7 @@ struct MaintenanceTaskDetailView: View {
             if !task.room.isEmpty {
                 LabeledContent("Room", value: task.room)
             }
-            LabeledContent("Frequency", value: task.frequency.displayName)
+            LabeledContent("Frequency", value: task.frequencyDisplayName)
 
             LabeledContent("Linked Appliance") {
                 Button {
@@ -523,7 +523,7 @@ struct EditMaintenanceTaskView: View {
         _name = State(initialValue: task.name)
         _description = State(initialValue: task.taskDescription)
         _room = State(initialValue: task.room)
-        _selectedFrequency = State(initialValue: task.frequency)
+        _selectedFrequency = State(initialValue: task.safeFrequency)
         _selectedAppliance = State(initialValue: task.appliance)
     }
 
@@ -588,7 +588,7 @@ struct EditMaintenanceTaskView: View {
         task.taskDescription = description
         task.room = room
         task.appliance = selectedAppliance
-        if task.frequency != selectedFrequency {
+        if task.safeFrequency != selectedFrequency {
             task.updateFrequency(selectedFrequency)
         }
     }

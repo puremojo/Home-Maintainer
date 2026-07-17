@@ -201,7 +201,7 @@ struct ApplianceDetailView: View {
                             }
 
                             HStack {
-                                Text(task.frequency.displayName)
+                                Text(task.frequencyDisplayName)
                                     .font(.caption)
                                     .foregroundStyle(.secondary)
 

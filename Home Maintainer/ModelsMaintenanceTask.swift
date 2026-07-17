@@ -15,13 +15,12 @@ final class MaintenanceTask {
     var name: String = ""
     var taskDescription: String = ""
     var room: String = ""
-    // Scalar backing — String is cached in NSManagedObject and never needs
-    // ModelContext.fulfill, making it safe to read on shared-store objects.
+    var frequency: TaskFrequency = TaskFrequency.monthly
+    // Scalar mirror of frequency. Views must read safeFrequency / frequencyDisplayName
+    // (which decode this string) rather than frequency directly, because accessing
+    // a Codable stored property triggers ModelContext.fulfill which crashes for
+    // objects in the shared CloudKit store where no schema configuration is registered.
     var frequencyEncoded: String = "monthly"
-    var frequency: TaskFrequency {
-        get { TaskFrequency.from(encoded: frequencyEncoded) }
-        set { frequencyEncoded = newValue.encoded }
-    }
     var lastCompleted: Date?
     var nextDue: Date?
     var isActive: Bool = true
@@ -35,12 +34,17 @@ final class MaintenanceTask {
     var home: Home?
     var sourceProject: RepairProject?
 
+    // Decoded from the scalar frequencyEncoded — safe to access on shared-store objects.
+    var safeFrequency: TaskFrequency { TaskFrequency.from(encoded: frequencyEncoded) }
+    var frequencyDisplayName: String { safeFrequency.displayName }
+
     init(name: String, description: String, frequency: TaskFrequency, appliance: Appliance? = nil, room: String = "") {
         self.id = UUID()
         self.name = name
         self.taskDescription = description
         self.room = room
         self.frequency = frequency
+        self.frequencyEncoded = frequency.encoded
         self.appliance = appliance
         self.isActive = true
         self.createdAt = Date()
@@ -74,6 +78,7 @@ final class MaintenanceTask {
     /// schedule (from the last completion if available, otherwise from now).
     func updateFrequency(_ newFrequency: TaskFrequency) {
         self.frequency = newFrequency
+        self.frequencyEncoded = newFrequency.encoded
         let base = lastCompleted ?? Date()
         self.nextDue = calculateNextDue(from: base, frequency: newFrequency)
     }

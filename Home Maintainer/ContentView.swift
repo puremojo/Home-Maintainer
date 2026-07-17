@@ -7,6 +7,7 @@
 
 import SwiftUI
 import SwiftData
+import CoreData
 import UIKit
 
 // Shared navigation state for cross-tab deep-links (e.g. "Take me to this appliance").
@@ -26,6 +27,7 @@ struct ContentView: View {
     @Query(sort: \Home.createdDate) private var homes: [Home]
     @State private var coordinator = NavigationCoordinator()
     @State private var shareAcceptErrorMessage: String?
+    @AppStorage("frequencyEncodedMigrationDone") private var frequencyMigrationDone = false
 
     var body: some View {
         if !authService.isSignedIn {
@@ -60,6 +62,10 @@ struct ContentView: View {
         .task {
             migrateIfNeeded()
             homeManager.restoreSelection(from: homes)
+            // Run fixup if container is already available when view first appears.
+            if cloudSharingService.persistentCloudKitContainer != nil {
+                fixupFrequencyEncoded()
+            }
         }
         .onChange(of: homes) { _, newHomes in
             if homeManager.currentHome == nil {
@@ -67,7 +73,10 @@ struct ContentView: View {
             }
         }
         .onChange(of: cloudSharingService.sharedStoreIsReady) { _, isReady in
-            if isReady { fixupOwnerNames() }
+            if isReady {
+                fixupOwnerNames()
+                fixupFrequencyEncoded()
+            }
         }
         .onChange(of: cloudSharingService.shareAcceptError) { _, message in
             shareAcceptErrorMessage = message
@@ -134,6 +143,36 @@ struct ContentView: View {
             changed = true
         }
         if changed { try? modelContext.save() }
+    }
+
+    /// One-time fixup that reads each task's stored Codable `frequency` via CoreData's
+    /// NSManagedObject.value(forKey:) — which uses the registered value transformer and
+    /// bypasses ModelContext.fulfill entirely — then writes the result into the new scalar
+    /// `frequencyEncoded` attribute. Preserves all existing frequency data without requiring
+    /// users to re-edit tasks. Safe for both private-store and shared-store objects.
+    private func fixupFrequencyEncoded() {
+        guard !frequencyMigrationDone,
+              let container = cloudSharingService.persistentCloudKitContainer else { return }
+
+        let ctx = container.viewContext
+        let request = NSFetchRequest<NSManagedObject>(entityName: "MaintenanceTask")
+        guard let tasks = try? ctx.fetch(request) else {
+            frequencyMigrationDone = true
+            return
+        }
+
+        var changed = false
+        for task in tasks {
+            guard let freq = task.value(forKey: "frequency") as? TaskFrequency else { continue }
+            let encoded = freq.encoded
+            if (task.value(forKey: "frequencyEncoded") as? String) != encoded {
+                task.setValue(encoded, forKey: "frequencyEncoded")
+                changed = true
+            }
+        }
+
+        if changed { try? ctx.save() }
+        frequencyMigrationDone = true
     }
 }
 
