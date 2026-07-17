@@ -288,6 +288,48 @@ final class CloudSharingService {
         CKContainer(identifier: "iCloud.EstraDOS.Home-Maintainer").privateCloudDatabase.add(op)
     }
 
+    // MARK: - Remove a Shared Home (participant leaving)
+
+    /// Removes a home that was shared to this user (not owned by them).
+    /// Uses purgeObjectsAndRecordsInZone when the zone is available, so both
+    /// the local shared store and the CloudKit zone are cleaned up. Falls back
+    /// to a CoreData-level delete (bypassing SwiftData cascade) when no share
+    /// record is found.
+    func removeSharedHome(_ home: Home) {
+        guard let container = persistentCloudKitContainer,
+              let sharedStore = sharedPersistentStore else {
+            print("[CloudSharingService] removeSharedHome: shared store not ready")
+            return
+        }
+
+        guard let homeObj = try? findManagedObject(
+            id: home.id, entityName: "Home", in: container.viewContext
+        ) else {
+            print("[CloudSharingService] removeSharedHome: home not found in CoreData context")
+            return
+        }
+
+        // Look up the CKShare so we can purge the entire shared zone cleanly.
+        if let shares = try? container.fetchShares(matching: [homeObj.objectID]),
+           let share = shares[homeObj.objectID] {
+            let zoneID = share.recordID.zoneID
+            container.purgeObjectsAndRecordsInZone(with: zoneID, in: sharedStore) { _, error in
+                if let error {
+                    print("[CloudSharingService] purgeObjectsAndRecordsInZone error: \(error)")
+                } else {
+                    print("[CloudSharingService] Shared zone purged: \(zoneID.zoneName)")
+                }
+            }
+        } else {
+            // No share record found — delete via CoreData context directly.
+            // This avoids SwiftData's cascade which would fault relationships
+            // through ModelContext.fulfill and crash for shared-store objects.
+            container.viewContext.delete(homeObj)
+            try? container.viewContext.save()
+            print("[CloudSharingService] Shared home deleted via CoreData context (no share record found)")
+        }
+    }
+
     // MARK: - Accept an Incoming Share Invitation
 
     func acceptShare(metadata: CKShare.Metadata) {

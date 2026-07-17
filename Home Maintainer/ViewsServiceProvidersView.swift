@@ -41,7 +41,7 @@ struct ServiceProvidersContent: View {
 
     private var providers: [ServiceProvider] {
         guard let home = homeManager.currentHome else { return [] }
-        return allProviders.filter { $0.home?.id == home.id }
+        return allProviders.filter { !$0.isDeleted && $0.home?.id == home.id }
     }
 
     private var filteredProviders: [ServiceProvider] {

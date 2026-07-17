@@ -115,14 +115,15 @@ private struct HomeTasksList: View {
         )
     }
 
-    // Regular maintenance tasks (not from projects)
+    // Regular maintenance tasks (not from projects).
+    // isDeleted guard short-circuits before the sourceProject relationship fault fires.
     private var tasks: [MaintenanceTask] {
-        homeTasks.filter { $0.sourceProject == nil }
+        homeTasks.filter { !$0.isDeleted && $0.sourceProject == nil }
     }
 
     // Project sub-tasks only
     private var projectSubTasks: [MaintenanceTask] {
-        homeTasks.filter { $0.sourceProject != nil }
+        homeTasks.filter { !$0.isDeleted && $0.sourceProject != nil }
     }
 
     var activeTasks: [MaintenanceTask] {

@@ -20,7 +20,7 @@ struct RepairProjectsView: View {
 
     private var allProjects: [RepairProject] {
         guard let home = homeManager.currentHome else { return [] }
-        return allProjectsRaw.filter { $0.home?.id == home.id }
+        return allProjectsRaw.filter { !$0.isDeleted && $0.home?.id == home.id }
     }
 
     var projects: [RepairProject] {

@@ -116,16 +116,20 @@ struct HomePickerView: View {
                 Text(sharingError ?? "Could not prepare share. Please try again.")
             }
             .confirmationDialog(
-                "Delete \"\(homeToDelete?.name ?? "")\"?",
+                homeToDeleteIsOwned
+                    ? "Delete \"\(homeToDelete?.name ?? "")\"?"
+                    : "Leave \"\(homeToDelete?.name ?? "")\"?",
                 isPresented: $showingDeleteConfirmation,
                 titleVisibility: .visible
             ) {
-                Button("Delete Home & All Data", role: .destructive) {
+                Button(homeToDeleteIsOwned ? "Delete Home & All Data" : "Leave Home", role: .destructive) {
                     if let home = homeToDelete { deleteHome(home) }
                 }
                 Button("Cancel", role: .cancel) {}
             } message: {
-                Text("All tasks, appliances, providers, and projects in this home will be permanently deleted.")
+                Text(homeToDeleteIsOwned
+                    ? "All tasks, appliances, providers, and projects in this home will be permanently deleted."
+                    : "You will lose access to this shared home and its data on this device.")
             }
             .alert("Import Failed", isPresented: $showingImportError) {
                 Button("OK") {}
@@ -197,16 +201,37 @@ struct HomePickerView: View {
         }
     }
 
+    // Returns true when homeToDelete is owned by the current user (drives dialog text).
+    private var homeToDeleteIsOwned: Bool {
+        guard let home = homeToDelete else { return true }
+        return homeManager.isCurrentUserOwner(of: home)
+    }
+
     private func deleteHome(_ home: Home) {
-        if homeManager.currentHome?.id == home.id {
+        // Clear the reference immediately so SwiftUI won't touch this object
+        // again after the save invalidates its backing data.
+        homeToDelete = nil
+
+        // Use persistentModelID (safe on any store object) rather than .id to
+        // avoid the SwiftData property-access path when updating selection.
+        let deletingID = home.persistentModelID
+        if homeManager.currentHome?.persistentModelID == deletingID {
             homeManager.clearSelection()
-            let remaining = homes.filter { $0.id != home.id }
+            let remaining = homes.filter { $0.persistentModelID != deletingID }
             if let next = remaining.first {
                 homeManager.select(next)
             }
         }
-        modelContext.delete(home)
-        try? modelContext.save()
+
+        if homeManager.isCurrentUserOwner(of: home) {
+            modelContext.delete(home)
+            try? modelContext.save()
+        } else {
+            // Shared homes must be removed at the CloudKit zone level, not via
+            // SwiftData delete — the cascade would try to fault shared-store
+            // relationships through ModelContext.fulfill and crash.
+            cloudSharingService.removeSharedHome(home)
+        }
     }
 }
 
