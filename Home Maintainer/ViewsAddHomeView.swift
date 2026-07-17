@@ -10,10 +10,10 @@ struct AddHomeView: View {
     @Environment(\.modelContext) private var modelContext
     @Environment(\.dismiss) private var dismiss
     @Environment(HomeManager.self) private var homeManager
+    @Environment(AuthService.self) private var authService
 
     @State private var homeName = ""
     @State private var address = ""
-    @State private var ownerName = UIDevice.current.name
 
     var body: some View {
         NavigationStack {
@@ -30,12 +30,18 @@ struct AddHomeView: View {
                 }
 
                 Section {
-                    TextField("Your Name", text: $ownerName)
-                        .autocorrectionDisabled()
+                    HStack {
+                        Text(authService.displayName)
+                            .foregroundStyle(.primary)
+                        Spacer()
+                        Image(systemName: "lock.fill")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
                 } header: {
                     Text("Owner")
                 } footer: {
-                    Text("Your name is shown to anyone you share this home with.")
+                    Text("Linked to your Apple ID. Shown to anyone you share this home with.")
                 }
             }
             .navigationTitle("New Home")
@@ -58,7 +64,7 @@ struct AddHomeView: View {
         let home = Home(
             name: homeName.trimmingCharacters(in: .whitespaces),
             address: address.trimmingCharacters(in: .whitespaces),
-            ownerName: ownerName.trimmingCharacters(in: .whitespaces),
+            ownerName: authService.displayName,
             isLocallyCreated: true
         )
         modelContext.insert(home)
