@@ -567,8 +567,11 @@ struct ChatView: View {
                 description: params.description,
                 frequency: frequency
             )
-            task.home = homeManager.currentHome
-            task.homeIDString = homeManager.currentHome?.id.uuidString
+            let currentHome = homeManager.currentHome
+            task.homeIDString = currentHome?.id.uuidString
+            if let currentHome, !cloudSharingService.isInSharedStore(entityName: "Home", id: currentHome.id) {
+                task.home = currentHome
+            }
             modelContext.insert(task)
         }
         
@@ -601,8 +604,11 @@ struct ChatView: View {
                 type: applianceType,
                 manufacturer: params.manufacturer ?? ""
             )
-            appliance.home = homeManager.currentHome
-            appliance.homeIDString = homeManager.currentHome?.id.uuidString
+            let currentHome = homeManager.currentHome
+            appliance.homeIDString = currentHome?.id.uuidString
+            if let currentHome, !cloudSharingService.isInSharedStore(entityName: "Home", id: currentHome.id) {
+                appliance.home = currentHome
+            }
             modelContext.insert(appliance)
         }
         
@@ -661,10 +667,10 @@ struct ChatView: View {
             return "Failed to parse search parameters"
         }
 
-        let homeID = home?.id
+        let homeIDStr = home?.id.uuidString
         let q = params.query.lowercased()
         let matched = providers.filter { p in
-            guard p.home?.id == homeID else { return false }
+            guard p.homeIDString == homeIDStr else { return false }
             return p.name.lowercased().contains(q) ||
                    p.category.rawValue.lowercased().contains(q) ||
                    p.phoneNumber.contains(q)
@@ -712,8 +718,11 @@ struct ChatView: View {
             provider.googlePriceLevel = place.priceLevel
             provider.weekdayHours = place.weekdayDescriptions
             provider.businessTypes = place.types.isEmpty ? nil : place.types
-            provider.home = homeManager.currentHome
-            provider.homeIDString = homeManager.currentHome?.id.uuidString
+            let currentHome = homeManager.currentHome
+            provider.homeIDString = currentHome?.id.uuidString
+            if let currentHome, !cloudSharingService.isInSharedStore(entityName: "Home", id: currentHome.id) {
+                provider.home = currentHome
+            }
             modelContext.insert(provider)
         }
 
@@ -753,8 +762,11 @@ struct ChatView: View {
             if let website = params.website { provider.website = website }
             if let rating = params.rating { provider.googleRating = rating }
 
-            provider.home = homeManager.currentHome
-            provider.homeIDString = homeManager.currentHome?.id.uuidString
+            let currentHome = homeManager.currentHome
+            provider.homeIDString = currentHome?.id.uuidString
+            if let currentHome, !cloudSharingService.isInSharedStore(entityName: "Home", id: currentHome.id) {
+                provider.home = currentHome
+            }
             modelContext.insert(provider)
         }
         
@@ -796,8 +808,11 @@ struct ChatView: View {
                 category: category,
                 priority: priority
             )
-            project.home = homeManager.currentHome
-            project.homeIDString = homeManager.currentHome?.id.uuidString
+            let currentHome = homeManager.currentHome
+            project.homeIDString = currentHome?.id.uuidString
+            if let currentHome, !cloudSharingService.isInSharedStore(entityName: "Home", id: currentHome.id) {
+                project.home = currentHome
+            }
             modelContext.insert(project)
         }
 
@@ -819,10 +834,15 @@ struct ChatView: View {
             }
 
             let task = MaintenanceTask(name: params.name, description: params.description, frequency: .once)
-            task.home = homeManager.currentHome
-            task.homeIDString = homeManager.currentHome?.id.uuidString
-            task.sourceProject = project
+            let currentHome = homeManager.currentHome
+            task.homeIDString = currentHome?.id.uuidString
+            if let currentHome, !cloudSharingService.isInSharedStore(entityName: "Home", id: currentHome.id) {
+                task.home = currentHome
+            }
             task.sourceProjectIDString = project.id.uuidString
+            if !cloudSharingService.isInSharedStore(entityName: "RepairProject", id: project.id) {
+                task.sourceProject = project
+            }
             modelContext.insert(task)
             return "✅ Added sub-task '\(params.name)' to project '\(project.title)'"
         }
