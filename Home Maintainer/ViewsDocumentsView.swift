@@ -706,6 +706,7 @@ struct ProjectDocumentsFolderView: View {
 struct AddDocumentSectionView: View {
     @Environment(\.modelContext) private var modelContext
     @Environment(\.dismiss) private var dismiss
+    @Environment(CloudSharingService.self) private var cloudSharingService
     let home: Home?
 
     @State private var name = ""
@@ -726,7 +727,9 @@ struct AddDocumentSectionView: View {
                 ToolbarItem(placement: .confirmationAction) {
                     Button("Add") {
                         let section = DocumentSection(name: name.trimmingCharacters(in: .whitespaces))
-                        section.home = home
+                        if let home, !cloudSharingService.isInSharedStore(entityName: "Home", id: home.id) {
+                            section.home = home
+                        }
                         section.homeIDString = home?.id.uuidString
                         modelContext.insert(section)
                         dismiss()

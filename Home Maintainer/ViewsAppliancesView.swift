@@ -19,7 +19,7 @@ struct AppliancesView: View {
 
     private var appliances: [Appliance] {
         guard let home = homeManager.currentHome else { return [] }
-        return allAppliances.filter { !$0.isDeleted && $0.home?.id == home.id }
+        return allAppliances.filter { !$0.isDeleted && $0.homeIDString == home.id.uuidString }
     }
 
     var body: some View {

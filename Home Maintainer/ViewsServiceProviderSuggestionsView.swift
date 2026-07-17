@@ -193,6 +193,7 @@ struct FindBusinessesView: View {
 
 struct GooglePlaceRow: View {
     @Environment(\.modelContext) private var modelContext
+    @Environment(CloudSharingService.self) private var cloudSharingService
     @Query private var allProviders: [ServiceProvider]
 
     let place: GooglePlaceResult
@@ -336,7 +337,9 @@ struct GooglePlaceRow: View {
         provider.googlePriceLevel = place.priceLevel
         provider.weekdayHours = place.weekdayDescriptions
         provider.businessTypes = place.types.isEmpty ? nil : place.types
-        provider.home = home
+        if let home, !cloudSharingService.isInSharedStore(entityName: "Home", id: home.id) {
+            provider.home = home
+        }
         provider.homeIDString = home?.id.uuidString
         modelContext.insert(provider)
     }

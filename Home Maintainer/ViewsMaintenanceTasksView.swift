@@ -106,10 +106,10 @@ private struct HomeTasksList: View {
     init(home: Home, sortOption: TaskSortOption) {
         self.home = home
         self.sortOption = sortOption
-        let homeID = home.id
+        let homeIDStr = home.id.uuidString
         _homeTasks = Query(
             filter: #Predicate<MaintenanceTask> { task in
-                task.home?.id == homeID
+                task.homeIDString == homeIDStr
             },
             sort: \MaintenanceTask.nextDue
         )
