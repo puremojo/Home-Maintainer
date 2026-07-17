@@ -256,23 +256,36 @@ private struct HomeRow: View {
             Button(role: .destructive, action: onDelete) {
                 Label("Delete", systemImage: "trash")
             }
-            Button(action: onShare) {
-                Label("Share", systemImage: "square.and.arrow.up")
+            if isOwner {
+                Button(action: onShare) {
+                    Label("Share", systemImage: "square.and.arrow.up")
+                }
+                .tint(.blue)
             }
-            .tint(.blue)
         }
     }
 
     @ViewBuilder
     private var ownerBadge: some View {
-        if !home.ownerName.isEmpty {
+        if isOwner {
+            if !home.ownerName.isEmpty {
+                HStack(spacing: 4) {
+                    Image(systemName: "crown.fill")
+                        .font(.caption2)
+                        .foregroundStyle(.yellow)
+                    Text("Owner")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+            }
+        } else {
             HStack(spacing: 4) {
-                Image(systemName: "crown.fill")
+                Image(systemName: "arrow.down.circle.fill")
                     .font(.caption2)
-                    .foregroundStyle(.yellow)
-                Text(isOwner ? "You (Owner)" : home.ownerName)
+                    .foregroundStyle(.teal)
+                Text(home.ownerName.isEmpty ? "Shared to me" : "Shared by \(home.ownerName)")
                     .font(.caption)
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(.teal)
             }
         }
     }
