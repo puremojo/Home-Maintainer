@@ -141,20 +141,6 @@ struct MaintenanceTaskDetailView: View {
             }
         }
 
-        Section("Documents") {
-            ForEach(task.taskDocuments ?? []) { document in
-                Button {
-                    selectedTaskDocument = document
-                } label: {
-                    HStack {
-                        Image(systemName: document.systemImage).foregroundStyle(.blue)
-                        Text(document.displayName).font(.subheadline)
-                        Spacer()
-                        Image(systemName: "chevron.right").font(.caption).foregroundStyle(.secondary)
-                    }
-                }
-            }
-        }
     }
 
     // MARK: - Sub-task view (name, description, products only)
