@@ -340,19 +340,21 @@ struct AppliancesFolderView: View {
     var body: some View {
         List {
             ForEach(appliances) { appliance in
-                NavigationLink(destination: ApplianceDocumentsFolderView(appliance: appliance)) {
-                    HStack(spacing: 14) {
-                        ApplianceIconView(appliance: appliance, size: 36)
-                        VStack(alignment: .leading, spacing: 2) {
-                            Text(appliance.name)
-                                .font(.body)
-                            let count = (appliance.documents?.count ?? 0) + (appliance.homeDocuments?.count ?? 0)
-                            Text("\(count) \(count == 1 ? "document" : "documents")")
-                                .font(.caption)
-                                .foregroundStyle(.secondary)
+                if !appliance.isDeleted {
+                    NavigationLink(destination: ApplianceDocumentsFolderView(appliance: appliance)) {
+                        HStack(spacing: 14) {
+                            ApplianceIconView(appliance: appliance, size: 36)
+                            VStack(alignment: .leading, spacing: 2) {
+                                Text(appliance.name)
+                                    .font(.body)
+                                let count = (appliance.documents?.count ?? 0) + (appliance.homeDocuments?.count ?? 0)
+                                Text("\(count) \(count == 1 ? "document" : "documents")")
+                                    .font(.caption)
+                                    .foregroundStyle(.secondary)
+                            }
                         }
+                        .padding(.vertical, 2)
                     }
-                    .padding(.vertical, 2)
                 }
             }
         }
@@ -480,23 +482,25 @@ struct TasksFolderView: View {
     var body: some View {
         List {
             ForEach(tasks) { task in
-                let docs = allHomeDocuments.filter { $0.linkedTaskIDs.contains(task.id) }
-                NavigationLink(destination: TaskDocumentsFolderView(task: task)) {
-                    HStack(spacing: 14) {
-                        Image(systemName: "checklist")
-                            .font(.title2)
-                            .foregroundStyle(.blue)
-                            .frame(width: 32)
-                        VStack(alignment: .leading, spacing: 2) {
-                            Text(task.name)
-                                .font(.body)
-                            let count = docs.count
-                            Text("\(count) \(count == 1 ? "document" : "documents")")
-                                .font(.caption)
-                                .foregroundStyle(.secondary)
+                if !task.isDeleted {
+                    let docs = allHomeDocuments.filter { $0.linkedTaskIDs.contains(task.id) }
+                    NavigationLink(destination: TaskDocumentsFolderView(task: task)) {
+                        HStack(spacing: 14) {
+                            Image(systemName: "checklist")
+                                .font(.title2)
+                                .foregroundStyle(.blue)
+                                .frame(width: 32)
+                            VStack(alignment: .leading, spacing: 2) {
+                                Text(task.name)
+                                    .font(.body)
+                                let count = docs.count
+                                Text("\(count) \(count == 1 ? "document" : "documents")")
+                                    .font(.caption)
+                                    .foregroundStyle(.secondary)
+                            }
                         }
+                        .padding(.vertical, 2)
                     }
-                    .padding(.vertical, 2)
                 }
             }
         }
@@ -577,24 +581,26 @@ struct ProjectsFolderView: View {
     var body: some View {
         List {
             ForEach(projects) { project in
-                NavigationLink(destination: ProjectDocumentsFolderView(project: project)) {
-                    HStack(spacing: 14) {
-                        Image(systemName: "hammer")
-                            .font(.title2)
-                            .foregroundStyle(.blue)
-                            .frame(width: 32)
-                        VStack(alignment: .leading, spacing: 2) {
-                            Text(project.title)
-                                .font(.body)
-                            let projDocs = project.projectDocuments?.count ?? 0
-                            let homeDocs = allHomeDocuments.filter { $0.linkedProjectIDs.contains(project.id) }.count
-                            let count = projDocs + homeDocs
-                            Text("\(count) \(count == 1 ? "document" : "documents")")
-                                .font(.caption)
-                                .foregroundStyle(.secondary)
+                if !project.isDeleted {
+                    NavigationLink(destination: ProjectDocumentsFolderView(project: project)) {
+                        HStack(spacing: 14) {
+                            Image(systemName: "hammer")
+                                .font(.title2)
+                                .foregroundStyle(.blue)
+                                .frame(width: 32)
+                            VStack(alignment: .leading, spacing: 2) {
+                                Text(project.title)
+                                    .font(.body)
+                                let projDocs = project.projectDocuments?.count ?? 0
+                                let homeDocs = allHomeDocuments.filter { $0.linkedProjectIDs.contains(project.id) }.count
+                                let count = projDocs + homeDocs
+                                Text("\(count) \(count == 1 ? "document" : "documents")")
+                                    .font(.caption)
+                                    .foregroundStyle(.secondary)
+                            }
                         }
+                        .padding(.vertical, 2)
                     }
-                    .padding(.vertical, 2)
                 }
             }
         }

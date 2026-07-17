@@ -163,63 +163,67 @@ struct ProjectRow: View {
     let project: RepairProject
     
     var body: some View {
-        VStack(alignment: .leading, spacing: 6) {
-            HStack {
-                Text(project.title)
-                    .font(.headline)
-                
-                Spacer()
-                
-                HStack(spacing: 4) {
-                    Image(systemName: project.priority.systemImage)
-                        .font(.caption)
-                        .foregroundStyle(project.priority.color)
+        if project.isDeleted {
+            EmptyView()
+        } else {
+            VStack(alignment: .leading, spacing: 6) {
+                HStack {
+                    Text(project.title)
+                        .font(.headline)
                     
-                    Image(systemName: project.status.systemImage)
+                    Spacer()
+                    
+                    HStack(spacing: 4) {
+                        Image(systemName: project.priority.systemImage)
+                            .font(.caption)
+                            .foregroundStyle(project.priority.color)
+                        
+                        Image(systemName: project.status.systemImage)
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                }
+                
+                HStack {
+                    Label(project.category.rawValue, systemImage: project.category.systemImage)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                    
+                    Text("•")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                    
+                    Text(project.status.rawValue)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                    
+                    Text("•")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                    
+                    HStack(spacing: 2) {
+                        Image(systemName: project.priority.systemImage)
+                            .font(.caption2)
+                        Text(project.priority.displayName)
+                    }
+                    .font(.caption)
+                    .foregroundStyle(project.priority.color)
+                }
+                
+                if let hiredProvider = project.hiredProvider {
+                    Text("Hired: \(hiredProvider.name)")
+                        .font(.caption)
+                        .foregroundStyle(.blue)
+                }
+                
+                if let quotesCount = project.quotes?.count, quotesCount > 0 {
+                    Text("\(quotesCount) quote\(quotesCount == 1 ? "" : "s")")
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 }
             }
-            
-            HStack {
-                Label(project.category.rawValue, systemImage: project.category.systemImage)
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                
-                Text("•")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                
-                Text(project.status.rawValue)
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                
-                Text("•")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                
-                HStack(spacing: 2) {
-                    Image(systemName: project.priority.systemImage)
-                        .font(.caption2)
-                    Text(project.priority.displayName)
-                }
-                .font(.caption)
-                .foregroundStyle(project.priority.color)
-            }
-            
-            if let hiredProvider = project.hiredProvider {
-                Text("Hired: \(hiredProvider.name)")
-                    .font(.caption)
-                    .foregroundStyle(.blue)
-            }
-            
-            if let quotesCount = project.quotes?.count, quotesCount > 0 {
-                Text("\(quotesCount) quote\(quotesCount == 1 ? "" : "s")")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-            }
+            .padding(.vertical, 2)
         }
-        .padding(.vertical, 2)
     }
 }
 

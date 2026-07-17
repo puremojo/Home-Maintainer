@@ -332,41 +332,45 @@ struct TaskRow: View {
     }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 4) {
-            HStack {
-                Text(task.name)
-                    .font(.headline)
+        if task.isDeleted {
+            EmptyView()
+        } else {
+            VStack(alignment: .leading, spacing: 4) {
+                HStack {
+                    Text(task.name)
+                        .font(.headline)
 
-                if isCompletedForCurrentCycle {
-                    Image(systemName: "checkmark.circle.fill")
-                        .font(.caption)
-                        .foregroundStyle(.green)
+                    if isCompletedForCurrentCycle {
+                        Image(systemName: "checkmark.circle.fill")
+                            .font(.caption)
+                            .foregroundStyle(.green)
+                    }
                 }
-            }
 
-            HStack {
-                Text(task.frequency.displayName)
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-
-                if let nextDue = task.nextDue {
-                    Text("•")
+                HStack {
+                    Text(task.frequency.displayName)
                         .font(.caption)
                         .foregroundStyle(.secondary)
 
-                    Text("Due \(nextDue, format: .dateTime.month().day())")
-                        .font(.caption)
-                        .foregroundStyle(task.isOverdue ? .red : .secondary)
-                }
+                    if let nextDue = task.nextDue {
+                        Text("•")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
 
-                if let lastCompleted = task.lastCompleted, isCompletedForCurrentCycle {
-                    Text("•")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
+                        Text("Due \(nextDue, format: .dateTime.month().day())")
+                            .font(.caption)
+                            .foregroundStyle(task.isOverdue ? .red : .secondary)
+                    }
 
-                    Text("Done \(lastCompleted, format: .dateTime.month().day())")
-                        .font(.caption)
-                        .foregroundStyle(.green)
+                    if let lastCompleted = task.lastCompleted, isCompletedForCurrentCycle {
+                        Text("•")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+
+                        Text("Done \(lastCompleted, format: .dateTime.month().day())")
+                            .font(.caption)
+                            .foregroundStyle(.green)
+                    }
                 }
             }
         }
@@ -380,31 +384,35 @@ struct ProjectSubTaskRow: View {
     var isDone: Bool { task.lastCompleted != nil }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 4) {
-            HStack {
-                Text(task.name)
-                    .font(.headline)
-                    .strikethrough(isDone, color: .gray)
-                    .foregroundStyle(isDone ? .secondary : .primary)
+        if task.isDeleted {
+            EmptyView()
+        } else {
+            VStack(alignment: .leading, spacing: 4) {
+                HStack {
+                    Text(task.name)
+                        .font(.headline)
+                        .strikethrough(isDone, color: .gray)
+                        .foregroundStyle(isDone ? .secondary : .primary)
 
-                if isDone {
-                    Image(systemName: "checkmark.circle.fill")
+                    if isDone {
+                        Image(systemName: "checkmark.circle.fill")
+                            .font(.caption)
+                            .foregroundStyle(.green)
+                    }
+                }
+
+                if !task.taskDescription.isEmpty {
+                    Text(task.taskDescription)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .lineLimit(2)
+                }
+
+                if let lastCompleted = task.lastCompleted {
+                    Text("Closed \(lastCompleted, format: .dateTime.month().day().year())")
                         .font(.caption)
                         .foregroundStyle(.green)
                 }
-            }
-
-            if !task.taskDescription.isEmpty {
-                Text(task.taskDescription)
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                    .lineLimit(2)
-            }
-
-            if let lastCompleted = task.lastCompleted {
-                Text("Closed \(lastCompleted, format: .dateTime.month().day().year())")
-                    .font(.caption)
-                    .foregroundStyle(.green)
             }
         }
     }

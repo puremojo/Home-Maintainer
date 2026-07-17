@@ -121,26 +121,30 @@ struct ApplianceRow: View {
     let appliance: Appliance
 
     var body: some View {
-        HStack {
-            ApplianceIconView(appliance: appliance)
+        if appliance.isDeleted {
+            EmptyView()
+        } else {
+            HStack {
+                ApplianceIconView(appliance: appliance)
 
-            VStack(alignment: .leading, spacing: 4) {
-                Text(appliance.name)
-                    .font(.headline)
+                VStack(alignment: .leading, spacing: 4) {
+                    Text(appliance.name)
+                        .font(.headline)
 
-                HStack {
-                    Text(appliance.type.rawValue)
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-
-                    if !appliance.manufacturer.isEmpty {
-                        Text("•")
+                    HStack {
+                        Text(appliance.type.rawValue)
                             .font(.caption)
                             .foregroundStyle(.secondary)
 
-                        Text(appliance.manufacturer)
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
+                        if !appliance.manufacturer.isEmpty {
+                            Text("•")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+
+                            Text(appliance.manufacturer)
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                        }
                     }
                 }
             }

@@ -221,46 +221,50 @@ private struct HomeRow: View {
     let onDelete: () -> Void
 
     var body: some View {
-        Button(action: onSelect) {
-            HStack(spacing: 12) {
-                Image(systemName: isSelected ? "house.fill" : "house")
-                    .foregroundStyle(isSelected ? .blue : .secondary)
-                    .font(.title3)
-                    .frame(width: 32)
+        if home.isDeleted {
+            EmptyView()
+        } else {
+            Button(action: onSelect) {
+                HStack(spacing: 12) {
+                    Image(systemName: isSelected ? "house.fill" : "house")
+                        .foregroundStyle(isSelected ? .blue : .secondary)
+                        .font(.title3)
+                        .frame(width: 32)
 
-                VStack(alignment: .leading, spacing: 3) {
-                    Text(home.name)
-                        .font(.headline)
-                        .foregroundStyle(.primary)
+                    VStack(alignment: .leading, spacing: 3) {
+                        Text(home.name)
+                            .font(.headline)
+                            .foregroundStyle(.primary)
 
-                    if !home.address.isEmpty {
-                        Text(home.address)
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
+                        if !home.address.isEmpty {
+                            Text(home.address)
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                        }
+
+                        ownerBadge
                     }
 
-                    ownerBadge
-                }
+                    Spacer()
 
-                Spacer()
-
-                if isSelected {
-                    Image(systemName: "checkmark")
-                        .foregroundStyle(.blue)
-                        .fontWeight(.semibold)
+                    if isSelected {
+                        Image(systemName: "checkmark")
+                            .foregroundStyle(.blue)
+                            .fontWeight(.semibold)
+                    }
                 }
+                .contentShape(Rectangle())
             }
-            .contentShape(Rectangle())
-        }
-        .swipeActions(edge: .trailing, allowsFullSwipe: false) {
-            Button(role: .destructive, action: onDelete) {
-                Label("Delete", systemImage: "trash")
-            }
-            if isOwner {
-                Button(action: onShare) {
-                    Label("Share", systemImage: "square.and.arrow.up")
+            .swipeActions(edge: .trailing, allowsFullSwipe: false) {
+                Button(role: .destructive, action: onDelete) {
+                    Label("Delete", systemImage: "trash")
                 }
-                .tint(.blue)
+                if isOwner {
+                    Button(action: onShare) {
+                        Label("Share", systemImage: "square.and.arrow.up")
+                    }
+                    .tint(.blue)
+                }
             }
         }
     }

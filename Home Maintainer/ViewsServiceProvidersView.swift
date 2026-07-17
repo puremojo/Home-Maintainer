@@ -226,48 +226,52 @@ struct ServiceProviderRow: View {
     }
 
     var body: some View {
-        HStack(alignment: .center, spacing: 0) {
-            // NavigationLink wraps icon + name only
-            NavigationLink(value: provider) {
-                HStack(alignment: .top, spacing: 10) {
-                    Image(systemName: provider.category.systemImage)
-                        .font(.title3)
-                        .foregroundStyle(.blue)
-                        .frame(width: 28)
-                        .padding(.top, 2)
+        if provider.isDeleted {
+            EmptyView()
+        } else {
+            HStack(alignment: .center, spacing: 0) {
+                // NavigationLink wraps icon + name only
+                NavigationLink(value: provider) {
+                    HStack(alignment: .top, spacing: 10) {
+                        Image(systemName: provider.category.systemImage)
+                            .font(.title3)
+                            .foregroundStyle(.blue)
+                            .frame(width: 28)
+                            .padding(.top, 2)
 
-                    VStack(alignment: .leading, spacing: 3) {
-                        HStack(spacing: 4) {
-                            Text(provider.name)
-                                .font(.headline)
-                            if provider.isFavorite {
-                                Image(systemName: "star.fill")
-                                    .font(.caption2)
-                                    .foregroundStyle(.yellow)
+                        VStack(alignment: .leading, spacing: 3) {
+                            HStack(spacing: 4) {
+                                Text(provider.name)
+                                    .font(.headline)
+                                if provider.isFavorite {
+                                    Image(systemName: "star.fill")
+                                        .font(.caption2)
+                                        .foregroundStyle(.yellow)
+                                }
                             }
-                        }
-                        if let rating = provider.googleRating {
-                            HStack(spacing: 2) {
-                                Image(systemName: "star.fill")
-                                    .font(.caption2)
-                                    .foregroundStyle(.yellow)
-                                Text(String(format: "%.1f", rating))
-                                    .font(.caption)
-                                    .foregroundStyle(.secondary)
+                            if let rating = provider.googleRating {
+                                HStack(spacing: 2) {
+                                    Image(systemName: "star.fill")
+                                        .font(.caption2)
+                                        .foregroundStyle(.yellow)
+                                    Text(String(format: "%.1f", rating))
+                                        .font(.caption)
+                                        .foregroundStyle(.secondary)
+                                }
                             }
                         }
                     }
                 }
-            }
 
-            Spacer()
+                Spacer()
 
-            // Phone sits outside the NavigationLink so it gets its own tap target
-            if !provider.phoneNumber.isEmpty, let url = URL(string: "tel:\(cleanPhone)") {
-                Link(provider.phoneNumber, destination: url)
-                    .font(.caption)
-                    .foregroundStyle(.blue)
-                    .padding(.leading, 8)
+                // Phone sits outside the NavigationLink so it gets its own tap target
+                if !provider.phoneNumber.isEmpty, let url = URL(string: "tel:\(cleanPhone)") {
+                    Link(provider.phoneNumber, destination: url)
+                        .font(.caption)
+                        .foregroundStyle(.blue)
+                        .padding(.leading, 8)
+                }
             }
         }
     }
