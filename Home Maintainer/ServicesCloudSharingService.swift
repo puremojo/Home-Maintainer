@@ -7,6 +7,15 @@
 //  The underlying container is captured lazily from the first CloudKit sync event
 //  that SwiftData posts after the store loads.
 //
+//  Sharing architecture:
+//  SwiftData only exposes a private CloudKit store, but NSPersistentCloudKitContainer
+//  (which SwiftData uses internally) can also manage a shared store. Once we capture
+//  the container we append a shared-database store description and call loadPersistentStores
+//  again — it only loads descriptions that aren't already in the coordinator. SwiftData's
+//  NSManagedObjectContext then sees records from both stores, so shared homes appear in
+//  @Query automatically. acceptShareInvitations requires a .shared-scoped store; supplying
+//  it correctly is what prevents the SIGABRT seen in earlier builds.
+//
 
 import Foundation
 import SwiftUI
@@ -26,6 +35,8 @@ final class CloudSharingService {
     private(set) var persistentCloudKitContainer: NSPersistentCloudKitContainer?
     /// True after CloudKit completes a successful setup or export — required before share(_:to:) works reliably.
     private(set) var isCloudKitReady = false
+    /// The shared-database store appended to SwiftData's container after first launch.
+    private var sharedPersistentStore: NSPersistentStore?
     private var eventObserver: NSObjectProtocol?
 
     // MARK: - Init
@@ -40,11 +51,12 @@ final class CloudSharingService {
         ) { [weak self] notification in
             guard let self else { return }
 
-            // Capture container on first event.
+            // Capture container on first event and add the shared store.
             if self.persistentCloudKitContainer == nil,
                let container = notification.object as? NSPersistentCloudKitContainer {
                 self.persistentCloudKitContainer = container
                 self.setupDatabaseSubscriptions(container: container)
+                self.setupSharedStore(container: container)
             }
 
             // Mark ready once a setup or export event succeeds — sharing requires this.
@@ -62,6 +74,50 @@ final class CloudSharingService {
         if let observer = eventObserver {
             NotificationCenter.default.removeObserver(observer)
         }
+    }
+
+    // MARK: - Shared Store Setup
+
+    private func setupSharedStore(container: NSPersistentCloudKitContainer) {
+        let sharedStoreURL = sharedStoreFileURL
+
+        // Already loaded (e.g. second notification firing after restart).
+        if let existing = container.persistentStoreCoordinator.persistentStores
+            .first(where: { $0.url == sharedStoreURL }) {
+            sharedPersistentStore = existing
+            print("[CloudSharingService] Shared store already present")
+            return
+        }
+
+        let desc = NSPersistentStoreDescription(url: sharedStoreURL)
+        let ckOptions = NSPersistentCloudKitContainerOptions(
+            containerIdentifier: "iCloud.EstraDOS.Home-Maintainer"
+        )
+        ckOptions.databaseScope = .shared
+        desc.cloudKitContainerOptions = ckOptions
+
+        // Calling loadPersistentStores again only loads descriptions not yet in the
+        // coordinator — existing stores are returned as-is without re-loading.
+        container.persistentStoreDescriptions.append(desc)
+        container.loadPersistentStores { [weak self] loadedDesc, error in
+            guard let self else { return }
+            if let error {
+                print("[CloudSharingService] Shared store failed to load: \(error)")
+                return
+            }
+            guard loadedDesc.url == sharedStoreURL else { return }
+            DispatchQueue.main.async {
+                self.sharedPersistentStore = container.persistentStoreCoordinator
+                    .persistentStore(for: sharedStoreURL)
+                print("[CloudSharingService] Shared store loaded: \(sharedStoreURL.lastPathComponent)")
+            }
+        }
+    }
+
+    private var sharedStoreFileURL: URL {
+        let appSupport = FileManager.default
+            .urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
+        return appSupport.appendingPathComponent("HomeMaintainerShared.store")
     }
 
     // MARK: - CloudKit Database Subscriptions
@@ -203,11 +259,27 @@ final class CloudSharingService {
 
     func acceptShare(metadata: CKShare.Metadata) {
         guard let container = persistentCloudKitContainer,
-              let store = container.persistentStoreCoordinator.persistentStores.first
-        else { return }
-        container.acceptShareInvitations(from: [metadata], into: store) { _, error in
+              let sharedStore = sharedPersistentStore else {
+            // Shared store not yet ready — accept at the CloudKit level so the server
+            // records the participation. Data will sync into the shared store once it loads.
+            let op = CKAcceptSharesOperation(shareMetadatas: [metadata])
+            op.qualityOfService = .userInitiated
+            op.acceptSharesResultBlock = { result in
+                if case .failure(let error) = result {
+                    print("[CloudSharingService] CKAcceptSharesOperation error: \(error)")
+                } else {
+                    print("[CloudSharingService] Share accepted (shared store not yet ready; data syncs on next load)")
+                }
+            }
+            CKContainer(identifier: "iCloud.EstraDOS.Home-Maintainer").add(op)
+            return
+        }
+
+        container.acceptShareInvitations(from: [metadata], into: sharedStore) { _, error in
             if let error {
                 print("[CloudSharingService] acceptShareInvitations error: \(error)")
+            } else {
+                print("[CloudSharingService] Share accepted and syncing to local shared store")
             }
         }
     }
