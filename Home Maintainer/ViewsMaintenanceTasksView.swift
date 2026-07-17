@@ -107,9 +107,13 @@ private struct HomeTasksList: View {
         self.home = home
         self.sortOption = sortOption
         let homeIDStr = home.id.uuidString
+        let homeID = home.id
+        // Match by homeIDString (new items, including shared-home additions where home==nil)
+        // OR by the home relationship (old shared-store tasks that predate the scalar field).
+        // The home?.id comparison is evaluated at SQL level by #Predicate — safe for shared-store.
         _homeTasks = Query(
             filter: #Predicate<MaintenanceTask> { task in
-                task.homeIDString == homeIDStr
+                task.homeIDString == homeIDStr || task.home?.id == homeID
             },
             sort: \MaintenanceTask.nextDue
         )

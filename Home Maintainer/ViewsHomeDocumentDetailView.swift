@@ -27,6 +27,7 @@ func extractDocumentText(data: Data, contentType: String) -> String? {
 struct HomeDocumentDetailView: View {
     @Environment(\.modelContext) private var modelContext
     @Environment(HomeManager.self) private var homeManager
+    @Environment(CloudSharingService.self) private var cloudSharingService
     @Query(sort: \MaintenanceTask.name) private var allTasks: [MaintenanceTask]
     @Query(sort: \Appliance.name) private var allAppliances: [Appliance]
     @Query(sort: \RepairProject.title) private var allProjects: [RepairProject]
@@ -41,17 +42,17 @@ struct HomeDocumentDetailView: View {
 
     private var homeTasks: [MaintenanceTask] {
         guard let home = homeManager.currentHome else { return [] }
-        return allTasks.filter { $0.home?.id == home.id }
+        return allTasks.filter { $0.homeIDString == home.id.uuidString }
     }
 
     private var homeAppliances: [Appliance] {
         guard let home = homeManager.currentHome else { return [] }
-        return allAppliances.filter { $0.home?.id == home.id }
+        return allAppliances.filter { $0.homeIDString == home.id.uuidString }
     }
 
     private var homeProjects: [RepairProject] {
         guard let home = homeManager.currentHome else { return [] }
-        return allProjects.filter { $0.home?.id == home.id }
+        return allProjects.filter { $0.homeIDString == home.id.uuidString }
     }
 
     private var linkedTasks: [MaintenanceTask] {
@@ -270,6 +271,7 @@ struct AddHomeDocumentView: View {
     @Environment(\.modelContext) private var modelContext
     @Environment(\.dismiss) private var dismiss
     @Environment(HomeManager.self) private var homeManager
+    @Environment(CloudSharingService.self) private var cloudSharingService
     @Query(sort: \MaintenanceTask.name) private var allTasks: [MaintenanceTask]
     @Query(sort: \Appliance.name) private var allAppliances: [Appliance]
     @Query(sort: \RepairProject.title) private var allProjects: [RepairProject]
@@ -292,17 +294,17 @@ struct AddHomeDocumentView: View {
 
     private var homeTasks: [MaintenanceTask] {
         guard let home else { return [] }
-        return allTasks.filter { $0.home?.id == home.id }
+        return allTasks.filter { $0.homeIDString == home.id.uuidString }
     }
 
     private var homeAppliances: [Appliance] {
         guard let home else { return [] }
-        return allAppliances.filter { $0.home?.id == home.id }
+        return allAppliances.filter { $0.homeIDString == home.id.uuidString }
     }
 
     private var homeProjects: [RepairProject] {
         guard let home else { return [] }
-        return allProjects.filter { $0.home?.id == home.id }
+        return allProjects.filter { $0.homeIDString == home.id.uuidString }
     }
 
     private var linkedTasks: [MaintenanceTask] {
@@ -469,12 +471,16 @@ struct AddHomeDocumentView: View {
         doc.attachmentData = attachmentData
         doc.attachmentName = attachmentName
         doc.attachmentContentType = attachmentContentType
-        doc.linkedAppliance = linkedAppliance
         doc.linkedTaskIDs = linkedTaskIDs
         doc.linkedProjectIDs = linkedProjectIDs
-        doc.section = linkedAppliance == nil ? section : nil
-        doc.home = home
         doc.homeIDString = home?.id.uuidString
+        let isShared = home.map { cloudSharingService.isInSharedStore(entityName: "Home", id: $0.id) } ?? false
+        if !isShared {
+            // Relationship assignments trigger inverse @Relationship updates on shared-store objects — crash.
+            doc.home = home
+            doc.section = linkedAppliance == nil ? section : nil
+            doc.linkedAppliance = linkedAppliance
+        }
         modelContext.insert(doc)
         dismiss()
     }
