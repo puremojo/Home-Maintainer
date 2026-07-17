@@ -877,7 +877,7 @@ struct ChatView: View {
                 }
                 // Skip sub-task details for shared-store projects to avoid
                 // ModelContext.fulfill crash on the subTasks relationship.
-                if !cloudSharingService.isInSharedStore(project.persistentModelID) {
+                if !cloudSharingService.isInSharedStore(entityName: "RepairProject", id: project.id) {
                     let subTasks = project.subTasks ?? []
                     if !subTasks.isEmpty {
                         let subTaskList = subTasks.map { task -> String in

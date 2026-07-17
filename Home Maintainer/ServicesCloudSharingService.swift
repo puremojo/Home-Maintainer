@@ -160,14 +160,32 @@ final class CloudSharingService {
 
     // MARK: - Shared Store Detection
 
-    /// Returns true if the given PersistentIdentifier belongs to the shared CloudKit store.
-    /// Relationship accesses on shared-store objects crash via ModelContext.fulfill because
-    /// SwiftData's ModelContext only knows about the private store. Use this to guard any
-    /// code that touches @Relationship properties on model objects from @Query results.
-    func isInSharedStore(_ identifier: PersistentIdentifier) -> Bool {
+    /// Returns true if the object with the given entity name and UUID lives in the shared
+    /// CloudKit store. Uses the same CoreData affectedStores technique as isCurrentUserOwner
+    /// so it is reliable regardless of PersistentIdentifier.storeIdentifier formatting.
+    /// The fetch is limited to 1 row in a single SQLite file and is fast to call per-render.
+    func isInSharedStore(entityName: String, id: UUID) -> Bool {
         guard let sharedStore = sharedPersistentStore,
-              let sharedURL = sharedStore.url else { return false }
-        return identifier.storeIdentifier == sharedURL.absoluteString
+              let container = persistentCloudKitContainer else { return false }
+        let request = NSFetchRequest<NSManagedObject>(entityName: entityName)
+        request.predicate = NSPredicate(format: "id == %@", id as NSUUID)
+        request.fetchLimit = 1
+        request.affectedStores = [sharedStore]
+        return (try? container.viewContext.fetch(request).first) != nil
+    }
+
+    /// Convenience overload using a PersistentIdentifier's entity name — still requires
+    /// the model's id UUID to be passed separately since the identifier's internal object
+    /// ID is not publicly accessible from SwiftData.
+    func isInSharedStore(_ identifier: PersistentIdentifier) -> Bool {
+        // Kept for call sites that already have a PersistentIdentifier but no UUID.
+        // Uses storeIdentifier as a fast pre-check, falls back to false if unavailable.
+        guard let sharedStore = sharedPersistentStore,
+              let sharedURL = sharedStore.url,
+              let storeID = identifier.storeIdentifier else { return false }
+        return storeID == sharedURL.absoluteString
+            || storeID == sharedURL.path
+            || storeID.hasSuffix(sharedURL.lastPathComponent)
     }
 
     // MARK: - Share a Home

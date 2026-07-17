@@ -33,7 +33,7 @@ struct MaintenanceTaskDetailView: View {
     // (appliance, records, products, sourceProject object) cannot be accessed on such
     // objects — only scalar properties and Codable blobs are safe.
     private var isSharedTask: Bool {
-        cloudSharingService.isInSharedStore(task.persistentModelID)
+        cloudSharingService.isInSharedStore(entityName: "MaintenanceTask", id: task.id)
     }
 
     private var isRepeating: Bool {
