@@ -38,9 +38,10 @@ final class HomeDocument {
     var linkedAppliance: Appliance?
     var section: DocumentSection?
     var home: Home?
-    // Scalar mirror of home?.id.uuidString — safe to compare without triggering
+    // Scalar mirrors of relationship UUIDs — safe to compare without triggering
     // ModelContext.fulfill on shared-store objects.
     var homeIDString: String? = nil
+    var sectionIDString: String? = nil
     var createdAt: Date = Date()
 
     init(title: String) {

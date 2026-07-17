@@ -473,13 +473,23 @@ struct AddHomeDocumentView: View {
         doc.attachmentContentType = attachmentContentType
         doc.linkedTaskIDs = linkedTaskIDs
         doc.linkedProjectIDs = linkedProjectIDs
+        // Scalar mirrors — always safe to set regardless of store.
         doc.homeIDString = home?.id.uuidString
-        let isShared = home.map { cloudSharingService.isInSharedStore(entityName: "Home", id: $0.id) } ?? false
-        if !isShared {
-            // Relationship assignments trigger inverse @Relationship updates on shared-store objects — crash.
+        if linkedAppliance == nil {
+            doc.sectionIDString = section.id.uuidString
+        }
+        // Relationship assignments trigger inverse @Relationship updates on shared-store objects — crash.
+        // Guard each relationship individually based on the target object's store.
+        if let home, !cloudSharingService.isInSharedStore(entityName: "Home", id: home.id) {
             doc.home = home
-            doc.section = linkedAppliance == nil ? section : nil
-            doc.linkedAppliance = linkedAppliance
+        }
+        let sectionInShared = cloudSharingService.isInSharedStore(entityName: "DocumentSection", id: section.id)
+        if !sectionInShared, linkedAppliance == nil {
+            doc.section = section
+        }
+        if let appliance = linkedAppliance,
+           !cloudSharingService.isInSharedStore(entityName: "Appliance", id: appliance.id) {
+            doc.linkedAppliance = appliance
         }
         modelContext.insert(doc)
         dismiss()

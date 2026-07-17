@@ -29,6 +29,7 @@ struct ContentView: View {
     @State private var shareAcceptErrorMessage: String?
     @AppStorage("frequencyEncodedMigrationDone") private var frequencyMigrationDone = false
     @AppStorage("homeIDStringMigrationDone") private var homeIDStringMigrationDone = false
+    @AppStorage("sectionIDStringMigrationDone") private var sectionIDStringMigrationDone = false
 
     var body: some View {
         if !authService.isSignedIn {
@@ -67,6 +68,7 @@ struct ContentView: View {
             if cloudSharingService.persistentCloudKitContainer != nil {
                 fixupFrequencyEncoded()
                 fixupHomeIDStrings()
+                fixupSectionIDStrings()
             }
         }
         .onChange(of: homes) { _, newHomes in
@@ -79,6 +81,7 @@ struct ContentView: View {
                 fixupOwnerNames()
                 fixupFrequencyEncoded()
                 fixupHomeIDStrings()
+                fixupSectionIDStrings()
             }
         }
         .onChange(of: cloudSharingService.shareAcceptError) { _, message in
@@ -244,6 +247,36 @@ struct ContentView: View {
 
         if changed { try? ctx.save() }
         homeIDStringMigrationDone = true
+    }
+
+    /// One-time backfill that reads each HomeDocument's `section` relationship via CoreData
+    /// and writes the section UUID into the new scalar `sectionIDString` attribute.
+    /// Skips shared-store objects (their relationships may not be safely accessible).
+    private func fixupSectionIDStrings() {
+        guard !sectionIDStringMigrationDone,
+              let container = cloudSharingService.persistentCloudKitContainer else { return }
+
+        let ctx = container.viewContext
+        let sharedStore = cloudSharingService.sharedPersistentStore
+        let request = NSFetchRequest<NSManagedObject>(entityName: "HomeDocument")
+        guard let docs = try? ctx.fetch(request) else {
+            sectionIDStringMigrationDone = true
+            return
+        }
+
+        var changed = false
+        for doc in docs {
+            if let sharedStore, doc.objectID.persistentStore === sharedStore { continue }
+            if let existing = doc.value(forKey: "sectionIDString") as? String, !existing.isEmpty { continue }
+            if let sectionObj = doc.value(forKey: "section") as? NSManagedObject,
+               let sectionID = sectionObj.value(forKey: "id") as? UUID {
+                doc.setValue(sectionID.uuidString, forKey: "sectionIDString")
+                changed = true
+            }
+        }
+
+        if changed { try? ctx.save() }
+        sectionIDStringMigrationDone = true
     }
 }
 

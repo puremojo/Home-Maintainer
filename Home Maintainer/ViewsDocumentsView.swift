@@ -209,9 +209,11 @@ struct DocumentsView: View {
 
                     // User-created section folders
                     ForEach(sections) { section in
+                        let sectionIDStr = section.id.uuidString
+                        // Use scalar-only filter — accessing section?.id in-memory crashes on shared-store docs.
+                        let count = allHomeDocuments.filter { $0.sectionIDString == sectionIDStr }.count
                         NavigationLink(destination: DocumentSectionFolderView(section: section, home: homeManager.currentHome)) {
-                            FolderRow(name: section.name, systemImage: "folder.fill",
-                                      count: section.documents?.count ?? 0)
+                            FolderRow(name: section.name, systemImage: "folder.fill", count: count)
                         }
                     }
                     .onDelete { offsets in
@@ -299,9 +301,21 @@ struct DocumentSectionFolderView: View {
     @Bindable var section: DocumentSection
     let home: Home?
     @State private var showingAddDocument = false
+    @Query private var documents: [HomeDocument]
 
-    private var documents: [HomeDocument] {
-        (section.documents ?? []).sorted { $0.createdAt < $1.createdAt }
+    init(section: DocumentSection, home: Home?) {
+        self.section = section
+        self.home = home
+        let sectionIDStr = section.id.uuidString
+        let sectionID = section.id
+        // Match by sectionIDString scalar (new docs) OR by the section relationship (pre-existing docs).
+        // Both comparisons are evaluated at SQL level by #Predicate — safe for shared-store objects.
+        _documents = Query(
+            filter: #Predicate<HomeDocument> { doc in
+                doc.sectionIDString == sectionIDStr || doc.section?.id == sectionID
+            },
+            sort: \HomeDocument.createdAt
+        )
     }
 
     var body: some View {
