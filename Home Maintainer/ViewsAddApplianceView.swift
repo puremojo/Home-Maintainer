@@ -12,6 +12,7 @@ import PhotosUI
 struct AddApplianceView: View {
     @Environment(\.modelContext) private var modelContext
     @Environment(\.dismiss) private var dismiss
+    @Environment(CloudSharingService.self) private var cloudSharingService
 
     let home: Home?
 
@@ -158,7 +159,9 @@ struct AddApplianceView: View {
         
         appliance.notes = notes
         appliance.room = room
-        appliance.home = home
+        if let home, !cloudSharingService.isInSharedStore(entityName: "Home", id: home.id) {
+            appliance.home = home
+        }
         appliance.homeIDString = home?.id.uuidString
 
         modelContext.insert(appliance)

@@ -11,6 +11,7 @@ import SwiftData
 struct AddRepairProjectView: View {
     @Environment(\.modelContext) private var modelContext
     @Environment(\.dismiss) private var dismiss
+    @Environment(CloudSharingService.self) private var cloudSharingService
 
     let home: Home?
 
@@ -97,7 +98,9 @@ struct AddRepairProjectView: View {
         )
         project.status = status
         project.notes = notes
-        project.home = home
+        if let home, !cloudSharingService.isInSharedStore(entityName: "Home", id: home.id) {
+            project.home = home
+        }
         project.homeIDString = home?.id.uuidString
 
         modelContext.insert(project)

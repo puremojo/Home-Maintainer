@@ -205,11 +205,12 @@ struct ContentView: View {
         var changed = false
 
         let homeEntities = [
-            ("MaintenanceTask", "homeIDString"),
-            ("Appliance",       "homeIDString"),
-            ("ServiceProvider", "homeIDString"),
-            ("HomeDocument",    "homeIDString"),
-            ("RepairProject",   "homeIDString"),
+            ("MaintenanceTask",  "homeIDString"),
+            ("Appliance",        "homeIDString"),
+            ("ServiceProvider",  "homeIDString"),
+            ("HomeDocument",     "homeIDString"),
+            ("RepairProject",    "homeIDString"),
+            ("DocumentSection",  "homeIDString"),
         ]
 
         for (entityName, key) in homeEntities {

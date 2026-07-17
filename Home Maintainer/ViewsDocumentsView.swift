@@ -62,27 +62,27 @@ struct DocumentsView: View {
 
     private var sections: [DocumentSection] {
         guard let home = homeManager.currentHome else { return [] }
-        return allSections.filter { $0.home?.id == home.id }
+        return allSections.filter { $0.homeIDString == home.id.uuidString }
     }
 
     private var appliancesWithDocuments: [Appliance] {
         guard let home = homeManager.currentHome else { return [] }
         return allAppliances.filter {
-            $0.home?.id == home.id &&
+            $0.homeIDString == home.id.uuidString &&
             (!($0.documents ?? []).isEmpty || !($0.homeDocuments ?? []).isEmpty)
         }
     }
 
     private var homeDocuments: [HomeDocument] {
         guard let home = homeManager.currentHome else { return [] }
-        return allHomeDocuments.filter { $0.home?.id == home.id }
+        return allHomeDocuments.filter { $0.homeIDString == home.id.uuidString }
     }
 
     private var projectsWithDocuments: [RepairProject] {
         guard let home = homeManager.currentHome else { return [] }
         let linkedProjectIDs = Set(homeDocuments.flatMap { $0.linkedProjectIDs })
         return allProjects.filter {
-            $0.home?.id == home.id &&
+            $0.homeIDString == home.id.uuidString &&
             (!($0.projectDocuments ?? []).isEmpty || linkedProjectIDs.contains($0.id))
         }
     }
@@ -90,7 +90,7 @@ struct DocumentsView: View {
     private var tasksWithLinkedDocuments: [MaintenanceTask] {
         guard let home = homeManager.currentHome else { return [] }
         let linkedTaskIDs = Set(homeDocuments.flatMap { $0.linkedTaskIDs })
-        return allTasks.filter { $0.home?.id == home.id && linkedTaskIDs.contains($0.id) }
+        return allTasks.filter { $0.homeIDString == home.id.uuidString && linkedTaskIDs.contains($0.id) }
     }
 
     private var searchResults: [DocumentSearchHit] {
@@ -727,6 +727,7 @@ struct AddDocumentSectionView: View {
                     Button("Add") {
                         let section = DocumentSection(name: name.trimmingCharacters(in: .whitespaces))
                         section.home = home
+                        section.homeIDString = home?.id.uuidString
                         modelContext.insert(section)
                         dismiss()
                     }

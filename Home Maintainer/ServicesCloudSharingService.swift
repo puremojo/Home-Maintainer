@@ -392,6 +392,20 @@ final class CloudSharingService {
         return try context.fetch(request).first
     }
 
+    /// Reads `taskDocuments` from a shared-store MaintenanceTask via CoreData's viewContext,
+    /// bypassing ModelContext.fulfill. `[TaskDocument]?` is a Codable transformable attribute;
+    /// accessing it through NSManagedObject.value(forKey:) uses the registered transformer safely.
+    func fetchTaskDocuments(for taskID: UUID) -> [TaskDocument] {
+        guard let sharedStore = sharedPersistentStore,
+              let container = persistentCloudKitContainer else { return [] }
+        let request = NSFetchRequest<NSManagedObject>(entityName: "MaintenanceTask")
+        request.predicate = NSPredicate(format: "id == %@", taskID as NSUUID)
+        request.fetchLimit = 1
+        request.affectedStores = [sharedStore]
+        guard let obj = try? container.viewContext.fetch(request).first else { return [] }
+        return (obj.value(forKey: "taskDocuments") as? [TaskDocument]) ?? []
+    }
+
     // MARK: - Errors
 
     enum SharingError: LocalizedError {

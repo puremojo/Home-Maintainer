@@ -11,6 +11,7 @@ import SwiftData
 struct AddMaintenanceTaskView: View {
     @Environment(\.modelContext) private var modelContext
     @Environment(\.dismiss) private var dismiss
+    @Environment(CloudSharingService.self) private var cloudSharingService
     @Query(sort: \Appliance.name) private var appliances: [Appliance]
 
     let home: Home?
@@ -99,7 +100,12 @@ struct AddMaintenanceTaskView: View {
             appliance: selectedAppliance,
             room: room
         )
-        task.home = home
+        // Only set the home relationship for private-store homes. Setting it on a
+        // shared-store home triggers the inverse update (home.tasks.append) which
+        // accesses a @Relationship on the shared store and crashes ModelContext.fulfill.
+        if let home, !cloudSharingService.isInSharedStore(entityName: "Home", id: home.id) {
+            task.home = home
+        }
         task.homeIDString = home?.id.uuidString
         modelContext.insert(task)
 

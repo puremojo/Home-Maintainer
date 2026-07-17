@@ -12,6 +12,7 @@ final class DocumentSection {
     var name: String = ""
     var sortOrder: Int = 0
     var home: Home?
+    var homeIDString: String? = nil
     @Relationship(deleteRule: .cascade, inverse: \HomeDocument.section)
     var documents: [HomeDocument]?
     var createdAt: Date = Date()

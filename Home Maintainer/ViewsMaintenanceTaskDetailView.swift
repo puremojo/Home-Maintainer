@@ -24,6 +24,7 @@ struct MaintenanceTaskDetailView: View {
     @State private var showingTaskDocumentPicker = false
     @State private var selectedTaskDocument: TaskDocument?
     @State private var selectedLinkedHomeDocument: HomeDocument?
+    @State private var sharedTaskDocuments: [TaskDocument] = []
 
     // Use the scalar mirror — accessing task.sourceProject directly on a shared-store
     // object triggers ModelContext.fulfill which crashes.
@@ -107,6 +108,13 @@ struct MaintenanceTaskDetailView: View {
                 contentType: doc.attachmentContentType ?? ""
             )
         }
+        .task(id: task.id) {
+            // Fetch taskDocuments for shared-store tasks via CoreData viewContext to
+            // bypass ModelContext.fulfill, which crashes for shared-store objects.
+            if isSharedTask {
+                sharedTaskDocuments = cloudSharingService.fetchTaskDocuments(for: task.id)
+            }
+        }
     }
 
     // MARK: - Shared-store task view (scalars only — no relationship access)
@@ -141,6 +149,22 @@ struct MaintenanceTaskDetailView: View {
             }
         }
 
+        if !sharedTaskDocuments.isEmpty {
+            Section("Documents") {
+                ForEach(sharedTaskDocuments) { document in
+                    Button {
+                        selectedTaskDocument = document
+                    } label: {
+                        HStack {
+                            Image(systemName: document.systemImage).foregroundStyle(.blue)
+                            Text(document.displayName).font(.subheadline)
+                            Spacer()
+                            Image(systemName: "chevron.right").font(.caption).foregroundStyle(.secondary)
+                        }
+                    }
+                }
+            }
+        }
     }
 
     // MARK: - Sub-task view (name, description, products only)

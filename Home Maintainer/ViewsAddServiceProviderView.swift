@@ -11,6 +11,7 @@ import SwiftData
 struct AddServiceProviderView: View {
     @Environment(\.modelContext) private var modelContext
     @Environment(\.dismiss) private var dismiss
+    @Environment(CloudSharingService.self) private var cloudSharingService
 
     let home: Home?
 
@@ -117,7 +118,9 @@ struct AddServiceProviderView: View {
         provider.notes = notes
         provider.isFavorite = isFavorite
         provider.rating = rating
-        provider.home = home
+        if let home, !cloudSharingService.isInSharedStore(entityName: "Home", id: home.id) {
+            provider.home = home
+        }
         provider.homeIDString = home?.id.uuidString
 
         modelContext.insert(provider)
