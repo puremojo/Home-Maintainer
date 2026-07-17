@@ -12,14 +12,19 @@ struct MaintenanceTasksView: View {
     @Environment(\.modelContext) private var modelContext
     @Environment(HomeManager.self) private var homeManager
     @Environment(NavigationCoordinator.self) private var coordinator
-    @Query(sort: \MaintenanceTask.nextDue) private var allTasks: [MaintenanceTask]
     @State private var navigationTarget: MaintenanceTask? = nil
     @State private var showingAddTask = false
     @State private var showingHomePicker = false
     @AppStorage("taskSortOption") private var sortOption: TaskSortOption = .upNext
     private var homeTasks: [MaintenanceTask] {
         guard let home = homeManager.currentHome else { return [] }
-        return allTasks.filter { $0.home?.id == home.id }
+        // Access home.tasks (to-many, resolved via SQL sub-fetch by CoreData) rather than
+        // filtering a flat @Query by task.home?.id. Faulting the task→home to-one relationship
+        // on objects from the dynamically-added CloudKit shared store hits an assertion in
+        // SwiftData's ModelContext.fulfill and crashes the app.
+        return (home.tasks ?? []).sorted {
+            ($0.nextDue ?? .distantFuture) < ($1.nextDue ?? .distantFuture)
+        }
     }
 
     // Regular maintenance tasks (not from projects)

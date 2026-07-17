@@ -36,7 +36,7 @@ final class CloudSharingService {
     /// True after CloudKit completes a successful setup or export — required before share(_:to:) works reliably.
     private(set) var isCloudKitReady = false
     /// The shared-database store appended to SwiftData's container after first launch.
-    private var sharedPersistentStore: NSPersistentStore?
+    private(set) var sharedPersistentStore: NSPersistentStore?
     private var eventObserver: NSObjectProtocol?
 
     // MARK: - Init

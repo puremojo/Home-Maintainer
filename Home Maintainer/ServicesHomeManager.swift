@@ -5,6 +5,7 @@
 
 import Foundation
 import SwiftData
+import CoreData
 
 @Observable
 final class HomeManager {
@@ -36,9 +37,21 @@ final class HomeManager {
 
     // MARK: - Owner detection
 
-    /// A home is "yours" if it was created on this device, not imported from someone else.
+    /// Returns true if the current user owns this home. A home in the CloudKit shared store
+    /// was created by someone else and shared to this device; a home in the private store
+    /// belongs to this user.
     func isCurrentUserOwner(of home: Home) -> Bool {
-        home.isLocallyCreated
+        guard let service = CloudSharingService.shared,
+              let sharedStore = service.sharedPersistentStore,
+              let container = service.persistentCloudKitContainer else {
+            return home.isLocallyCreated
+        }
+        let request = NSFetchRequest<NSManagedObject>(entityName: "Home")
+        request.predicate = NSPredicate(format: "id == %@", home.id as NSUUID)
+        request.fetchLimit = 1
+        request.affectedStores = [sharedStore]
+        let inSharedStore = (try? container.viewContext.fetch(request).first) != nil
+        return !inSharedStore
     }
 
     // MARK: - File-open import coordination
