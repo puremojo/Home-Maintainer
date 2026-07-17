@@ -40,6 +40,8 @@ final class CloudSharingService {
     /// True once the shared store is loaded and registered with the ModelContainer.
     /// ContentView observes this to run one-time owner-name fixups safely.
     private(set) var sharedStoreIsReady = false
+    /// Non-nil when share acceptance fails. ContentView observes this to show an alert.
+    var shareAcceptError: String?
     private var eventObserver: NSObjectProtocol?
 
     /// Set by Home_MaintainerApp immediately after creating the ModelContainer.
@@ -350,9 +352,16 @@ final class CloudSharingService {
             return
         }
 
-        container.acceptShareInvitations(from: [metadata], into: sharedStore) { _, error in
+        container.acceptShareInvitations(from: [metadata], into: sharedStore) { [weak self] _, error in
             if let error {
                 print("[CloudSharingService] acceptShareInvitations error: \(error)")
+                DispatchQueue.main.async {
+                    if error.localizedDescription.contains("owner participant") {
+                        self?.shareAcceptError = "You're already the owner of this home — it's already in your app."
+                    } else {
+                        self?.shareAcceptError = "Could not accept the home invitation. Please try again."
+                    }
+                }
             } else {
                 print("[CloudSharingService] Share accepted and syncing to local shared store")
             }

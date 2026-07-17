@@ -25,6 +25,7 @@ struct ContentView: View {
     @Environment(CloudSharingService.self) private var cloudSharingService
     @Query(sort: \Home.createdDate) private var homes: [Home]
     @State private var coordinator = NavigationCoordinator()
+    @State private var shareAcceptErrorMessage: String?
 
     var body: some View {
         if !authService.isSignedIn {
@@ -67,6 +68,17 @@ struct ContentView: View {
         }
         .onChange(of: cloudSharingService.sharedStoreIsReady) { _, isReady in
             if isReady { fixupOwnerNames() }
+        }
+        .onChange(of: cloudSharingService.shareAcceptError) { _, message in
+            shareAcceptErrorMessage = message
+        }
+        .alert("Invitation Error", isPresented: Binding(
+            get: { shareAcceptErrorMessage != nil },
+            set: { if !$0 { shareAcceptErrorMessage = nil; cloudSharingService.shareAcceptError = nil } }
+        )) {
+            Button("OK") { shareAcceptErrorMessage = nil; cloudSharingService.shareAcceptError = nil }
+        } message: {
+            Text(shareAcceptErrorMessage ?? "")
         }
         .sheet(
             isPresented: Binding(
