@@ -45,9 +45,29 @@ struct Home_MaintainerApp: App {
         CloudSharingService.shared = sharingService
 
         sharedModelContainer = Self.makeModelContainer()
-        // Give CloudSharingService a handle to the container so it can register
-        // the shared store URL after loading — fixes ModelContext.fulfill crashes.
+        // Give CloudSharingService a handle to the container so it can set up
+        // CloudKit sync for the shared store after the first eventChangedNotification.
         sharingService.modelContainer = sharedModelContainer
+
+        // Pre-register the shared-store URL with SwiftData SYNCHRONOUSLY before
+        // the first view render. setupSharedStore() fires asynchronously after a
+        // CloudKit event, but @Query can return shared-store objects on the very
+        // first render pass. Without a registered configuration, ModelContext.fulfill
+        // cannot decode relationships or Codable properties on those objects and
+        // crashes. Registering here closes that window entirely.
+        // setupSharedStore() still adds the CloudKit-backed NSPersistentStore to
+        // the coordinator separately — SwiftData only uses this configuration for
+        // schema lookup, so real CloudKit sync is unaffected.
+        let appSupport = FileManager.default
+            .urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
+        let sharedStoreURL = appSupport.appendingPathComponent("HomeMaintainerShared.store")
+        let sharedStoreCfg = ModelConfiguration(
+            "HomeMaintainerShared",
+            schema: sharedModelContainer.schema,
+            url: sharedStoreURL,
+            cloudKitDatabase: .none
+        )
+        sharedModelContainer.configurations.insert(sharedStoreCfg)
     }
 
     private static func makeModelContainer() -> ModelContainer {
