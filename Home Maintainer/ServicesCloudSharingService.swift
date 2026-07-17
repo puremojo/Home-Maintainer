@@ -37,7 +37,15 @@ final class CloudSharingService {
     private(set) var isCloudKitReady = false
     /// The shared-database store appended to SwiftData's container after first launch.
     private(set) var sharedPersistentStore: NSPersistentStore?
+    /// True once the shared store is loaded and registered with the ModelContainer.
+    /// ContentView observes this to run one-time owner-name fixups safely.
+    private(set) var sharedStoreIsReady = false
     private var eventObserver: NSObjectProtocol?
+
+    /// Set by Home_MaintainerApp immediately after creating the ModelContainer.
+    /// Used to register the shared store URL with SwiftData so ModelContext.fulfill
+    /// can decode properties (e.g. TaskFrequency) on objects from that store.
+    @ObservationIgnored var modelContainer: ModelContainer?
 
     // MARK: - Init
 
@@ -85,6 +93,7 @@ final class CloudSharingService {
         if let existing = container.persistentStoreCoordinator.persistentStores
             .first(where: { $0.url == sharedStoreURL }) {
             sharedPersistentStore = existing
+            sharedStoreIsReady = true
             print("[CloudSharingService] Shared store already present")
             return
         }
@@ -116,6 +125,23 @@ final class CloudSharingService {
             DispatchQueue.main.async {
                 self.sharedPersistentStore = container.persistentStoreCoordinator
                     .persistentStore(for: sharedStoreURL)
+
+                // Register the shared store URL with SwiftData's ModelContainer so
+                // ModelContext.fulfill can decode stored attributes (e.g. TaskFrequency,
+                // which is Codable-encoded as Data) on objects fetched from this store.
+                // Without this, any SwiftData property access on shared-store objects
+                // triggers _assertionFailure inside ModelContext.fulfill.
+                if let mc = self.modelContainer {
+                    let cfg = ModelConfiguration(
+                        "HomeMaintainerShared",
+                        schema: mc.schema,
+                        url: sharedStoreURL,
+                        cloudKitDatabase: .none
+                    )
+                    mc.configurations.insert(cfg)
+                }
+
+                self.sharedStoreIsReady = true
                 print("[CloudSharingService] Shared store loaded: \(sharedStoreURL.lastPathComponent)")
             }
         }

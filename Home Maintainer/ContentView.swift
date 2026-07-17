@@ -7,6 +7,7 @@
 
 import SwiftUI
 import SwiftData
+import UIKit
 
 // Shared navigation state for cross-tab deep-links (e.g. "Take me to this appliance").
 @Observable
@@ -21,6 +22,7 @@ struct ContentView: View {
     @Environment(\.modelContext) private var modelContext
     @Environment(AuthService.self) private var authService
     @Environment(HomeManager.self) private var homeManager
+    @Environment(CloudSharingService.self) private var cloudSharingService
     @Query(sort: \Home.createdDate) private var homes: [Home]
     @State private var coordinator = NavigationCoordinator()
 
@@ -63,6 +65,9 @@ struct ContentView: View {
                 homeManager.restoreSelection(from: newHomes)
             }
         }
+        .onChange(of: cloudSharingService.sharedStoreIsReady) { _, isReady in
+            if isReady { fixupOwnerNames() }
+        }
         .sheet(
             isPresented: Binding(
                 get: { homeManager.pendingImportURL != nil },
@@ -80,7 +85,7 @@ struct ContentView: View {
     private func migrateIfNeeded() {
         guard homes.isEmpty else { return }
 
-        let defaultHome = Home(name: "My Home", ownerName: "Owner", isLocallyCreated: true)
+        let defaultHome = Home(name: "My Home", ownerName: UIDevice.current.name, isLocallyCreated: true)
         modelContext.insert(defaultHome)
 
         // Filter in memory to avoid CloudKit-incompatible nil-relationship predicates.
@@ -102,6 +107,21 @@ struct ContentView: View {
 
         try? modelContext.save()
         homeManager.select(defaultHome)
+    }
+
+    /// One-time fixup for homes whose ownerName was set to the literal "Owner"
+    /// by the old migrateIfNeeded() code. Runs only after the shared store is
+    /// available so isCurrentUserOwner() can use the persistent-store check
+    /// (rather than isLocallyCreated, which is unreliable for shared homes).
+    private func fixupOwnerNames() {
+        let deviceName = UIDevice.current.name
+        var changed = false
+        for home in homes where home.ownerName == "Owner" {
+            guard homeManager.isCurrentUserOwner(of: home) else { continue }
+            home.ownerName = deviceName
+            changed = true
+        }
+        if changed { try? modelContext.save() }
     }
 }
 

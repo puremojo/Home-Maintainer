@@ -45,6 +45,9 @@ struct Home_MaintainerApp: App {
         CloudSharingService.shared = sharingService
 
         sharedModelContainer = Self.makeModelContainer()
+        // Give CloudSharingService a handle to the container so it can register
+        // the shared store URL after loading — fixes ModelContext.fulfill crashes.
+        sharingService.modelContainer = sharedModelContainer
     }
 
     private static func makeModelContainer() -> ModelContainer {
