@@ -116,7 +116,10 @@ final class CloudSharingService {
             // Return the existing share URL if this home is already shared.
             if let shares = try? ckContainer.fetchShares(matching: [homeObject.objectID]),
                let existingShare = shares[homeObject.objectID] {
-                if let url = existingShare.url {
+                // Upgrade legacy shares that were created without public access.
+                if existingShare.publicPermission == .none {
+                    updatePublicPermission(on: existingShare, home: home, completion: completion)
+                } else if let url = existingShare.url {
                     completion(.success(url))
                 } else {
                     completion(.failure(SharingError.shareURLUnavailable))
@@ -134,22 +137,58 @@ final class CloudSharingService {
         completion: @escaping (Result<URL, Error>) -> Void
     ) {
         print("[CloudSharingService] Calling share(_:to:) for '\(home.name)' (objectID: \(homeObject.objectID))")
-        container.share([homeObject], to: nil) { _, share, _, error in
+        container.share([homeObject], to: nil) { _, share, ckContainer, error in
             if let error {
                 print("[CloudSharingService] share(_:to:) error: \(error)")
-            } else {
-                print("[CloudSharingService] share(_:to:) succeeded — share=\(share != nil), url=\(share?.url?.absoluteString ?? "nil")")
+                DispatchQueue.main.async { completion(.failure(error)) }
+                return
             }
+            guard let share else {
+                DispatchQueue.main.async { completion(.failure(SharingError.shareCreationFailed)) }
+                return
+            }
+            print("[CloudSharingService] share(_:to:) succeeded — url=\(share.url?.absoluteString ?? "nil")")
+
+            share[CKShare.SystemFieldKey.title] = home.name as CKRecordValue
+            // Allow anyone with the link to join — without this, iOS shows "Item unavailable"
+            // to the recipient because the default publicPermission is .none (invite-only).
+            share.publicPermission = .readWrite
+
+            let database = (ckContainer ?? CKContainer(identifier: "iCloud.EstraDOS.Home-Maintainer")).privateCloudDatabase
+            let op = CKModifyRecordsOperation(recordsToSave: [share], recordIDsToDelete: nil)
+            op.qualityOfService = .userInitiated
+            op.modifyRecordsResultBlock = { result in
+                DispatchQueue.main.async {
+                    if case .failure(let saveError) = result {
+                        print("[CloudSharingService] Failed to save share permissions: \(saveError)")
+                    }
+                    if let url = share.url {
+                        completion(.success(url))
+                    } else {
+                        completion(.failure(SharingError.shareURLUnavailable))
+                    }
+                }
+            }
+            database.add(op)
+        }
+    }
+
+    private func updatePublicPermission(
+        on share: CKShare,
+        home: Home,
+        completion: @escaping (Result<URL, Error>) -> Void
+    ) {
+        share[CKShare.SystemFieldKey.title] = home.name as CKRecordValue
+        share.publicPermission = .readWrite
+        let op = CKModifyRecordsOperation(recordsToSave: [share], recordIDsToDelete: nil)
+        op.qualityOfService = .userInitiated
+        op.modifyRecordsResultBlock = { result in
             DispatchQueue.main.async {
-                if let error {
+                if case .failure(let error) = result {
+                    print("[CloudSharingService] Failed to upgrade share permissions: \(error)")
                     completion(.failure(error))
                     return
                 }
-                guard let share else {
-                    completion(.failure(SharingError.shareCreationFailed))
-                    return
-                }
-                share[CKShare.SystemFieldKey.title] = home.name as CKRecordValue
                 if let url = share.url {
                     completion(.success(url))
                 } else {
@@ -157,6 +196,7 @@ final class CloudSharingService {
                 }
             }
         }
+        CKContainer(identifier: "iCloud.EstraDOS.Home-Maintainer").privateCloudDatabase.add(op)
     }
 
     // MARK: - Accept an Incoming Share Invitation
