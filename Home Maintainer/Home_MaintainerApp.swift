@@ -46,22 +46,40 @@ struct Home_MaintainerApp: App {
         let container = NSPersistentCloudKitContainer(name: "HomeMaintainer", managedObjectModel: model)
 
         let baseURL = NSPersistentContainer.defaultDirectoryURL()
+        let privateURL = baseURL.appendingPathComponent("HomeMaintainer.sqlite")
+        let sharedURL  = baseURL.appendingPathComponent("HomeMaintainerShared.sqlite")
 
-        let privateDesc = NSPersistentStoreDescription(url: baseURL.appendingPathComponent("HomeMaintainer.sqlite"))
+        // Pre-flight: probe each store file with the current model.
+        // If the file exists but is incompatible (e.g., leftover from an earlier schema),
+        // destroy it so loadPersistentStores creates a fresh empty store.
+        for url in [privateURL, sharedURL] where FileManager.default.fileExists(atPath: url.path) {
+            let probe = NSPersistentStoreCoordinator(managedObjectModel: model)
+            let opts: [AnyHashable: Any] = [NSReadOnlyPersistentStoreOption: true]
+            if (try? probe.addPersistentStore(ofType: NSSQLiteStoreType, configurationName: nil,
+                                              at: url, options: opts)) == nil {
+                NSLog("⚠️ Destroying incompatible CoreData store: \(url.lastPathComponent)")
+                try? probe.destroyPersistentStore(at: url, ofType: NSSQLiteStoreType, options: nil)
+            }
+        }
+
+        let privateDesc = NSPersistentStoreDescription(url: privateURL)
         let privateOptions = NSPersistentCloudKitContainerOptions(containerIdentifier: "iCloud.EstraDOS.Home-Maintainer")
         privateOptions.databaseScope = .private
         privateDesc.cloudKitContainerOptions = privateOptions
 
-        let sharedDesc = NSPersistentStoreDescription(url: baseURL.appendingPathComponent("HomeMaintainerShared.sqlite"))
+        let sharedDesc = NSPersistentStoreDescription(url: sharedURL)
         let sharedOptions = NSPersistentCloudKitContainerOptions(containerIdentifier: "iCloud.EstraDOS.Home-Maintainer")
         sharedOptions.databaseScope = .shared
         sharedDesc.cloudKitContainerOptions = sharedOptions
 
         container.persistentStoreDescriptions = [privateDesc, sharedDesc]
 
-        container.loadPersistentStores { _, error in
+        container.loadPersistentStores { description, error in
             if let error {
-                fatalError("Failed to load persistent stores: \(error)")
+                // Include the store name and full error in the crash message so
+                // it appears in the next crash report (not just EXC_BREAKPOINT).
+                let storeName = description.url?.lastPathComponent ?? "unknown"
+                fatalError("CoreData '\(storeName)' failed to load: \(error)")
             }
         }
 
