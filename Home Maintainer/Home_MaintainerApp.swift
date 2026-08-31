@@ -112,11 +112,34 @@ struct Home_MaintainerApp: App {
 class AppDelegate: NSObject, UIApplicationDelegate {
     func application(
         _ application: UIApplication,
+        didFinishLaunchingWithOptions launchOptions: [UIApplication.LaunchOptionsKey: Any]? = nil
+    ) -> Bool {
+        // Register with APNS so CloudKit can deliver silent push notifications to this device.
+        // Without this call, NSPersistentCloudKitContainer never receives a device token and
+        // falls back to periodic polling (~30 min) instead of near-instant push-driven sync.
+        application.registerForRemoteNotifications()
+        return true
+    }
+
+    func application(
+        _ application: UIApplication,
         configurationForConnecting connectingSceneSession: UISceneSession,
         options: UIScene.ConnectionOptions
     ) -> UISceneConfiguration {
         let config = UISceneConfiguration(name: nil, sessionRole: connectingSceneSession.role)
         config.delegateClass = SceneDelegate.self
         return config
+    }
+
+    // Without this handler, iOS has no signal to grant the app background time when
+    // CloudKit sends a silent push saying shared-zone data has changed. NSPersistentCloudKitContainer
+    // handles the actual fetch internally; we just need to acknowledge the notification so iOS
+    // gives the container enough time to complete the import.
+    func application(
+        _ application: UIApplication,
+        didReceiveRemoteNotification userInfo: [AnyHashable: Any],
+        fetchCompletionHandler completionHandler: @escaping (UIBackgroundFetchResult) -> Void
+    ) {
+        completionHandler(.newData)
     }
 }

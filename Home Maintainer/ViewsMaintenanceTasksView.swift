@@ -7,6 +7,7 @@
 
 import SwiftUI
 import SwiftData
+import CoreData
 
 // MARK: - Outer shell (navigation, toolbar, sheets)
 
@@ -14,6 +15,7 @@ struct MaintenanceTasksView: View {
     @Environment(\.modelContext) private var modelContext
     @Environment(HomeManager.self) private var homeManager
     @Environment(NavigationCoordinator.self) private var coordinator
+    @Environment(CloudSharingService.self) private var cloudSharingService
     @State private var navigationTarget: MaintenanceTask? = nil
     @State private var showingAddTask = false
     @State private var showingHomePicker = false
@@ -29,7 +31,11 @@ struct MaintenanceTasksView: View {
                 if let home = homeManager.currentHome {
                     // HomeTasksList builds its @Query predicate from homeID in init so the
                     // filter runs at the SQLite level — no SwiftData relationship faulting.
+                    // .id() forces full recreation (and a fresh @Query fetch) whenever
+                    // sharedStoreVersion changes — CoreData-level saves and CloudKit imports
+                    // bypass SwiftData's observation hooks so @Query won't auto-update otherwise.
                     HomeTasksList(home: home, sortOption: sortOption)
+                        .id(cloudSharingService.sharedStoreVersion)
                 } else {
                     noHomeView
                 }
@@ -102,12 +108,14 @@ private struct HomeTasksList: View {
     let home: Home
     let sortOption: TaskSortOption
     @Query private var homeTasks: [MaintenanceTask]
+    @Environment(CloudSharingService.self) private var cloudSharingService
 
     init(home: Home, sortOption: TaskSortOption) {
         self.home = home
         self.sortOption = sortOption
         let homeIDStr = home.id.uuidString
         let homeID = home.id
+        NSLog("[HomeTasksList] init — homeIDStr=\(homeIDStr)")
         // Match by homeIDString (new items, including shared-home additions where home==nil)
         // OR by the home relationship (old shared-store tasks that predate the scalar field).
         // The home?.id comparison is evaluated at SQL level by #Predicate — safe for shared-store.
@@ -175,37 +183,42 @@ private struct HomeTasksList: View {
             .sorted { $0.projectTitle.localizedCaseInsensitiveCompare($1.projectTitle) == .orderedAscending }
     }
 
+    /// Total MaintenanceTask rows across all stores (no predicate).
+    private var allCoreDataTaskCount: Int {
+        guard let container = cloudSharingService.persistentCloudKitContainer else { return -1 }
+        let req = NSFetchRequest<NSManagedObject>(entityName: "MaintenanceTask")
+        return (try? container.viewContext.fetch(req).count) ?? -1
+    }
+
+    /// Tasks in CoreData whose homeIDString matches the current home — bypasses @Query
+    /// to isolate whether a predicate mismatch is hiding imported records.
+    private var matchingCoreDataTaskCount: Int {
+        guard let container = cloudSharingService.persistentCloudKitContainer else { return -1 }
+        let req = NSFetchRequest<NSManagedObject>(entityName: "MaintenanceTask")
+        req.predicate = NSPredicate(format: "homeIDString == %@", home.id.uuidString)
+        return (try? container.viewContext.fetch(req).count) ?? -1
+    }
+
     var body: some View {
+        let _ = NSLog("[HomeTasksList] body — totalFetched=\(homeTasks.count) active=\(activeTasks.count)")
         List {
             switch sortOption {
             case .upNext:
                 upNextSections
                 if activeTasks.isEmpty && closedTasks.isEmpty {
-                    ContentUnavailableView(
-                        "No Tasks",
-                        systemImage: "checklist",
-                        description: Text("Add your first maintenance task to get started")
-                    )
+                    noTasksView
                 }
                 closedTasksSection
             case .room:
                 roomSections
                 if activeTasks.isEmpty && closedTasks.isEmpty {
-                    ContentUnavailableView(
-                        "No Tasks",
-                        systemImage: "checklist",
-                        description: Text("Add your first maintenance task to get started")
-                    )
+                    noTasksView
                 }
                 closedTasksSection
             case .frequency:
                 frequencySections
                 if activeTasks.isEmpty && closedTasks.isEmpty {
-                    ContentUnavailableView(
-                        "No Tasks",
-                        systemImage: "checklist",
-                        description: Text("Add your first maintenance task to get started")
-                    )
+                    noTasksView
                 }
                 closedTasksSection
             case .fromProjects:
@@ -219,6 +232,42 @@ private struct HomeTasksList: View {
                 }
             }
         }
+        .refreshable {
+            cloudSharingService.refreshSharedStore()
+        }
+        .overlay(alignment: .bottomTrailing) {
+            // Always-visible sync diagnostic panel.
+            // q = @Query result count (tasks shown in list)
+            // db = all CoreData MaintenanceTask records across all stores
+            // m = CoreData tasks whose homeIDString matches this home
+            // xp prv/shr = last private / shared CloudKit export event result
+            // im prv/shr = last private / shared CloudKit import event result
+            VStack(alignment: .trailing, spacing: 2) {
+                Text("q:\(homeTasks.count) db:\(allCoreDataTaskCount) m:\(matchingCoreDataTaskCount)")
+                Text("add:\(cloudSharingService.lastTaskAddPath)")
+                Text("xp prv:\(cloudSharingService.privateExportStatus) shr:\(cloudSharingService.sharedExportStatus)")
+                Text("im prv:\(cloudSharingService.privateImportStatus) shr:\(cloudSharingService.sharedImportStatus)")
+            }
+            .font(.caption2)
+            .monospacedDigit()
+            .foregroundStyle(.secondary.opacity(0.6))
+            .padding(.horizontal, 6)
+            .padding(.vertical, 4)
+            .background(.thinMaterial, in: RoundedRectangle(cornerRadius: 6))
+            .padding(8)
+        }
+    }
+
+    @ViewBuilder
+    private var noTasksView: some View {
+        let dbCount = allCoreDataTaskCount
+        ContentUnavailableView(
+            "No Tasks",
+            systemImage: "checklist",
+            description: Text(dbCount > 0
+                ? "Tasks exist in the database (db:\(dbCount)) but none match this home — pull to refresh"
+                : "Add your first maintenance task to get started")
+        )
     }
 
     @ViewBuilder

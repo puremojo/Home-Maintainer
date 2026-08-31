@@ -19,8 +19,6 @@ struct HomePickerView: View {
     @Environment(\.modelContext) private var modelContext
     @Environment(\.dismiss) private var dismiss
     @Environment(HomeManager.self) private var homeManager
-    @Query(sort: \Home.createdDate) private var homes: [Home]
-
     @Environment(CloudSharingService.self) private var cloudSharingService
 
     @State private var showingAddHome = false
@@ -39,26 +37,19 @@ struct HomePickerView: View {
     var body: some View {
         NavigationStack {
             List {
-                if homes.isEmpty {
-                    emptyState
-                } else {
-                    ForEach(homes) { home in
-                        HomeRow(
-                            home: home,
-                            isSelected: homeManager.currentHome?.id == home.id,
-                            isOwner: homeManager.isCurrentUserOwner(of: home),
-                            onSelect: {
-                                homeManager.select(home)
-                                dismiss()
-                            },
-                            onShare: { shareHome(home) },
-                            onDelete: {
-                                homeToDelete = home
-                                showingDeleteConfirmation = true
-                            }
-                        )
+                HomesListContent(
+                    currentHomeID: homeManager.currentHome?.id,
+                    onSelect: { home in
+                        homeManager.select(home)
+                        dismiss()
+                    },
+                    onShare: shareHome,
+                    onDelete: { home in
+                        homeToDelete = home
+                        showingDeleteConfirmation = true
                     }
-                }
+                )
+                .id(cloudSharingService.sharedStoreVersion)
 
                 importButton
             }
@@ -141,14 +132,6 @@ struct HomePickerView: View {
 
     // MARK: - Subviews
 
-    private var emptyState: some View {
-        ContentUnavailableView {
-            Label("No Homes Yet", systemImage: "house")
-        } description: {
-            Text("Tap + to create your first home.")
-        }
-    }
-
     private var importButton: some View {
         Section {
             Button {
@@ -216,11 +199,9 @@ struct HomePickerView: View {
         // avoid the SwiftData property-access path when updating selection.
         let deletingID = home.persistentModelID
         if homeManager.currentHome?.persistentModelID == deletingID {
+            // Clear selection; ContentView.onChange(of: homes) will auto-select the next home
+            // via homeManager.restoreSelection when homes updates after the delete.
             homeManager.clearSelection()
-            let remaining = homes.filter { $0.persistentModelID != deletingID }
-            if let next = remaining.first {
-                homeManager.select(next)
-            }
         }
 
         if homeManager.isCurrentUserOwner(of: home) {
@@ -231,6 +212,41 @@ struct HomePickerView: View {
             // SwiftData delete — the cascade would try to fault shared-store
             // relationships through ModelContext.fulfill and crash.
             cloudSharingService.removeSharedHome(home)
+        }
+    }
+}
+
+// MARK: - Homes List Content
+// Owns @Query so .id(sharedStoreVersion) on the call site forces a fresh fetch
+// when a new shared home arrives (e.g. after acceptShareInvitations completes).
+
+private struct HomesListContent: View {
+    let currentHomeID: UUID?
+    let onSelect: (Home) -> Void
+    let onShare: (Home) -> Void
+    let onDelete: (Home) -> Void
+
+    @Environment(HomeManager.self) private var homeManager
+    @Query(sort: \Home.createdDate) private var homes: [Home]
+
+    var body: some View {
+        if homes.isEmpty {
+            ContentUnavailableView {
+                Label("No Homes Yet", systemImage: "house")
+            } description: {
+                Text("Tap + to create your first home.")
+            }
+        } else {
+            ForEach(homes) { home in
+                HomeRow(
+                    home: home,
+                    isSelected: currentHomeID == home.id,
+                    isOwner: homeManager.isCurrentUserOwner(of: home),
+                    onSelect: { onSelect(home) },
+                    onShare: { onShare(home) },
+                    onDelete: { onDelete(home) }
+                )
+            }
         }
     }
 }

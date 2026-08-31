@@ -90,6 +90,88 @@ struct AddRepairProjectView: View {
     }
     
     private func addProject() {
+        let isSharedHome = home.map {
+            cloudSharingService.isInSharedStore(entityName: "Home", id: $0.id)
+        } ?? false
+        let isOwnedSharedHome = !isSharedHome && (home.map {
+            cloudSharingService.isOwnedAndShared(homeID: $0.id)
+        } ?? false)
+
+        if isSharedHome, let home {
+            addProjectToSharedStore(home: home)
+        } else if isOwnedSharedHome, let home {
+            addProjectToOwnedSharedStore(home: home)
+        } else {
+            addProjectToPrivateStore()
+        }
+        dismiss()
+    }
+
+    private func addProjectToSharedStore(home: Home) {
+        let homeIDStr = home.id.uuidString
+        do {
+            let homeObj = cloudSharingService.findHomeManagedObject(id: home.id)
+            let projectObj = try cloudSharingService.insertIntoSharedStore(entityName: "RepairProject") { obj in
+                obj.setValue(UUID(), forKey: "id")
+                obj.setValue(title, forKey: "title")
+                obj.setValue(description, forKey: "projectDescription")
+                obj.setValue(category.rawValue, forKey: "category")
+                obj.setValue(status.rawValue, forKey: "status")
+                obj.setValue(priority.rawValue, forKey: "priority")
+                obj.setValue(notes, forKey: "notes")
+                obj.setValue(Date(), forKey: "createdAt")
+                obj.setValue(homeIDStr, forKey: "homeIDString")
+                obj.setValue(homeObj, forKey: "home")
+            }
+            for draft in productDrafts where !draft.isEmpty {
+                try cloudSharingService.insertIntoSharedStore(entityName: "ProductLink") { obj in
+                    obj.setValue(UUID(), forKey: "id")
+                    obj.setValue(draft.name, forKey: "name")
+                    obj.setValue(draft.urlString, forKey: "urlString")
+                    obj.setValue(draft.imageData, forKey: "imageData")
+                    obj.setValue(Date(), forKey: "createdAt")
+                    obj.setValue(projectObj, forKey: "project")
+                }
+            }
+            try cloudSharingService.saveSharedContext()
+        } catch {
+            print("[AddRepairProject] Shared store insert failed: \(error)")
+        }
+    }
+
+    private func addProjectToOwnedSharedStore(home: Home) {
+        let homeIDStr = home.id.uuidString
+        do {
+            let homeObj = cloudSharingService.findHomeManagedObject(id: home.id)
+            let projectObj = try cloudSharingService.insertLinkedToHome(entityName: "RepairProject") { obj in
+                obj.setValue(UUID(), forKey: "id")
+                obj.setValue(title, forKey: "title")
+                obj.setValue(description, forKey: "projectDescription")
+                obj.setValue(category.rawValue, forKey: "category")
+                obj.setValue(status.rawValue, forKey: "status")
+                obj.setValue(priority.rawValue, forKey: "priority")
+                obj.setValue(notes, forKey: "notes")
+                obj.setValue(Date(), forKey: "createdAt")
+                obj.setValue(homeIDStr, forKey: "homeIDString")
+                obj.setValue(homeObj, forKey: "home")
+            }
+            for draft in productDrafts where !draft.isEmpty {
+                try cloudSharingService.insertLinkedToHome(entityName: "ProductLink") { obj in
+                    obj.setValue(UUID(), forKey: "id")
+                    obj.setValue(draft.name, forKey: "name")
+                    obj.setValue(draft.urlString, forKey: "urlString")
+                    obj.setValue(draft.imageData, forKey: "imageData")
+                    obj.setValue(Date(), forKey: "createdAt")
+                    obj.setValue(projectObj, forKey: "project")
+                }
+            }
+            try cloudSharingService.saveSharedContext()
+        } catch {
+            NSLog("[AddRepairProject] Owner-shared insert failed: \(error)")
+        }
+    }
+
+    private func addProjectToPrivateStore() {
         let project = RepairProject(
             title: title,
             description: description,
@@ -102,16 +184,12 @@ struct AddRepairProjectView: View {
             project.home = home
         }
         project.homeIDString = home?.id.uuidString
-
         modelContext.insert(project)
-
         for draft in productDrafts where !draft.isEmpty {
             let product = ProductLink(name: draft.name, urlString: draft.urlString, imageData: draft.imageData)
             product.project = project
             modelContext.insert(product)
         }
-
-        dismiss()
     }
 }
 

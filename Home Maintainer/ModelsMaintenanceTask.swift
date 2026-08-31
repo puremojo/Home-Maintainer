@@ -89,29 +89,7 @@ final class MaintenanceTask {
     }
 
     private func calculateNextDue(from date: Date, frequency: TaskFrequency) -> Date? {
-        let calendar = Calendar.current
-
-        switch frequency {
-        case .once:
-            // A one-time task never repeats, so there is no next due date.
-            return nil
-        case .daily:
-            return calendar.date(byAdding: .day, value: 1, to: date)
-        case .weekly:
-            return calendar.date(byAdding: .weekOfYear, value: 1, to: date)
-        case .biweekly:
-            return calendar.date(byAdding: .weekOfYear, value: 2, to: date)
-        case .monthly:
-            return calendar.date(byAdding: .month, value: 1, to: date)
-        case .quarterly:
-            return calendar.date(byAdding: .month, value: 3, to: date)
-        case .biannually:
-            return calendar.date(byAdding: .month, value: 6, to: date)
-        case .annually:
-            return calendar.date(byAdding: .year, value: 1, to: date)
-        case .custom(let days):
-            return calendar.date(byAdding: .day, value: days, to: date)
-        }
+        frequency.nextDue(from: date)
     }
 
     var isOverdue: Bool {
@@ -168,6 +146,21 @@ enum TaskFrequency: Codable, Hashable, Equatable {
         case .biannually: return "biannually"
         case .annually: return "annually"
         case .custom(let days): return "custom:\(days)"
+        }
+    }
+
+    func nextDue(from date: Date) -> Date? {
+        let cal = Calendar.current
+        switch self {
+        case .once:             return nil
+        case .daily:            return cal.date(byAdding: .day, value: 1, to: date)
+        case .weekly:           return cal.date(byAdding: .weekOfYear, value: 1, to: date)
+        case .biweekly:         return cal.date(byAdding: .weekOfYear, value: 2, to: date)
+        case .monthly:          return cal.date(byAdding: .month, value: 1, to: date)
+        case .quarterly:        return cal.date(byAdding: .month, value: 3, to: date)
+        case .biannually:       return cal.date(byAdding: .month, value: 6, to: date)
+        case .annually:         return cal.date(byAdding: .year, value: 1, to: date)
+        case .custom(let days): return cal.date(byAdding: .day, value: days, to: date)
         }
     }
 

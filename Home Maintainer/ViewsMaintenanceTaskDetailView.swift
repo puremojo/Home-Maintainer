@@ -69,14 +69,14 @@ struct MaintenanceTaskDetailView: View {
         .navigationTitle(task.name)
         .navigationBarTitleDisplayMode(.inline)
         .toolbar {
-            if !isProjectSubTask && !isSharedTask {
+            if !isProjectSubTask {
                 ToolbarItem(placement: .primaryAction) {
                     Button("Edit") { showingEditTask = true }
                 }
             }
         }
         .sheet(isPresented: $showingEditTask) {
-            EditMaintenanceTaskView(task: task)
+            EditMaintenanceTaskView(task: task, isSharedTask: isSharedTask)
         }
         .sheet(isPresented: $showingCloseSheet) {
             CloseTaskSheet(task: task, isPermanent: true, modelContext: modelContext)
@@ -117,16 +117,10 @@ struct MaintenanceTaskDetailView: View {
         }
     }
 
-    // MARK: - Shared-store task view (scalars only — no relationship access)
+    // MARK: - Shared-store task view (scalars only — no @Relationship or Codable transformable reads)
 
     @ViewBuilder
     private var sharedTaskSections: some View {
-        Section {
-            Label("This task is from a shared home. Editing is not available.", systemImage: "person.2.fill")
-                .font(.footnote)
-                .foregroundStyle(.secondary)
-        }
-
         Section("Details") {
             LabeledContent("Name", value: task.name)
             if !task.taskDescription.isEmpty {
@@ -147,6 +141,31 @@ struct MaintenanceTaskDetailView: View {
                         .foregroundStyle(task.isOverdue ? .red : .primary)
                 }
             }
+            if !task.isActive {
+                LabeledContent("Status") {
+                    HStack(spacing: 6) {
+                        Image(systemName: "archivebox.fill").foregroundStyle(.secondary)
+                        Text("Closed Task").foregroundStyle(.secondary)
+                    }
+                }
+            }
+        }
+
+        Section {
+            if task.isActive {
+                Button { showingCloseSheet = true } label: {
+                    Label("Close Task", systemImage: "checkmark.circle")
+                }
+                if isRepeating {
+                    Button { showingCloseOccurrenceSheet = true } label: {
+                        Label("Close Task Occurrence", systemImage: "checkmark.circle.badge.xmark")
+                    }
+                }
+            } else {
+                Button { sharedReopenTask() } label: {
+                    Label("Reopen Task", systemImage: "arrow.uturn.backward.circle")
+                }
+            }
         }
 
         if !sharedTaskDocuments.isEmpty {
@@ -165,6 +184,23 @@ struct MaintenanceTaskDetailView: View {
                 }
             }
         }
+    }
+
+    /// Reopens a shared-store task using only safe scalar writes.
+    /// Cannot call task.reopen() because it reads task.frequency (Codable transformable — crashes for shared-store objects).
+    private func sharedReopenTask() {
+        task.isActive = true
+        task.lastCompleted = nil
+        // updateFrequency reads self.lastCompleted (safe Date?) and sets scalar properties only.
+        // We pass task.safeFrequency (decoded from frequencyEncoded string) to avoid
+        // reading task.frequency (Codable transformable — crashes for shared-store objects).
+        task.updateFrequency(task.safeFrequency)
+        cloudSharingService.insertMaintenanceRecord(
+            taskID: task.id,
+            completedDate: Date(),
+            notes: "Task reopened",
+            action: .reopened
+        )
     }
 
     // MARK: - Sub-task view (name, description, products only)
@@ -429,12 +465,17 @@ struct MaintenanceTaskDetailView: View {
 
 struct CloseTaskSheet: View {
     @Environment(\.dismiss) private var dismiss
+    @Environment(CloudSharingService.self) private var cloudSharingService
     let task: MaintenanceTask
     let isPermanent: Bool
     let modelContext: ModelContext
 
     @State private var completionDate = Date()
     @State private var notes = ""
+
+    private var isSharedTask: Bool {
+        cloudSharingService.isInSharedStore(entityName: "MaintenanceTask", id: task.id)
+    }
 
     var body: some View {
         NavigationStack {
@@ -459,15 +500,31 @@ struct CloseTaskSheet: View {
     }
 
     private func complete() {
+        let action: TaskAction = isPermanent ? .closed : .occurrenceClosed
+
         if isPermanent {
             task.isActive = false
             task.lastCompleted = completionDate
         } else {
-            task.markCompleted(on: completionDate)
+            // Cannot call task.markCompleted() for shared-store tasks — it reads
+            // task.frequency (Codable transformable) which crashes via ModelContext.fulfill.
+            // Use safe scalar writes and safeFrequency (decoded from frequencyEncoded) instead.
+            task.lastCompleted = completionDate
+            task.nextDue = task.safeFrequency.nextDue(from: completionDate)
         }
-        let action: TaskAction = isPermanent ? .closed : .occurrenceClosed
-        let record = MaintenanceRecord(task: task, completedDate: completionDate, notes: notes, action: action)
-        modelContext.insert(record)
+
+        if isSharedTask {
+            // Insert the record into the shared CloudKit zone so all participants see it.
+            cloudSharingService.insertMaintenanceRecord(
+                taskID: task.id,
+                completedDate: completionDate,
+                notes: notes,
+                action: action
+            )
+        } else {
+            let record = MaintenanceRecord(task: task, completedDate: completionDate, notes: notes, action: action)
+            modelContext.insert(record)
+        }
         dismiss()
     }
 }
@@ -580,6 +637,7 @@ struct EditMaintenanceTaskView: View {
     @Environment(\.dismiss) private var dismiss
     @Query(sort: \Appliance.name) private var appliances: [Appliance]
     @Bindable var task: MaintenanceTask
+    let isSharedTask: Bool
 
     @State private var name: String
     @State private var description: String
@@ -591,13 +649,17 @@ struct EditMaintenanceTaskView: View {
         .once, .daily, .weekly, .biweekly, .monthly, .quarterly, .biannually, .annually
     ]
 
-    init(task: MaintenanceTask) {
+    init(task: MaintenanceTask, isSharedTask: Bool) {
         self.task = task
+        self.isSharedTask = isSharedTask
         _name = State(initialValue: task.name)
         _description = State(initialValue: task.taskDescription)
         _room = State(initialValue: task.room)
         _selectedFrequency = State(initialValue: task.safeFrequency)
-        _selectedAppliance = State(initialValue: task.appliance)
+        // task.appliance is a @Relationship — accessing it on a shared-store object
+        // crashes via ModelContext.fulfill. Skip it; appliance links aren't editable
+        // for shared tasks.
+        _selectedAppliance = State(initialValue: isSharedTask ? nil : task.appliance)
     }
 
     var body: some View {
@@ -619,23 +681,25 @@ struct EditMaintenanceTaskView: View {
                     }
                 }
 
-                Section("Link to Appliance") {
-                    Picker("Appliance", selection: $selectedAppliance) {
-                        Text("None").tag(nil as Appliance?)
-                        ForEach(appliances) { appliance in
-                            HStack {
-                                Image(systemName: appliance.type.systemImage)
-                                Text(appliance.name)
+                if !isSharedTask {
+                    Section("Link to Appliance") {
+                        Picker("Appliance", selection: $selectedAppliance) {
+                            Text("None").tag(nil as Appliance?)
+                            ForEach(appliances) { appliance in
+                                HStack {
+                                    Image(systemName: appliance.type.systemImage)
+                                    Text(appliance.name)
+                                }
+                                .tag(appliance as Appliance?)
                             }
-                            .tag(appliance as Appliance?)
                         }
-                    }
-                    .disabled(appliances.isEmpty)
+                        .disabled(appliances.isEmpty)
 
-                    if appliances.isEmpty {
-                        Text("No appliances added yet")
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
+                        if appliances.isEmpty {
+                            Text("No appliances added yet")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                        }
                     }
                 }
             }
@@ -660,7 +724,11 @@ struct EditMaintenanceTaskView: View {
         task.name = name
         task.taskDescription = description
         task.room = room
-        task.appliance = selectedAppliance
+        // Skip appliance assignment for shared-store tasks — setting a @Relationship
+        // triggers the inverse update which accesses the shared-store object and crashes.
+        if !isSharedTask {
+            task.appliance = selectedAppliance
+        }
         if task.safeFrequency != selectedFrequency {
             task.updateFrequency(selectedFrequency)
         }

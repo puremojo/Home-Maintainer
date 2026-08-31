@@ -142,35 +142,106 @@ struct AddApplianceView: View {
     }
 
     private func addAppliance() {
+        let isSharedHome = home.map {
+            cloudSharingService.isInSharedStore(entityName: "Home", id: $0.id)
+        } ?? false
+        let isOwnedSharedHome = !isSharedHome && (home.map {
+            cloudSharingService.isOwnedAndShared(homeID: $0.id)
+        } ?? false)
+
+        if isSharedHome, let home {
+            addApplianceToSharedStore(home: home)
+        } else if isOwnedSharedHome, let home {
+            addApplianceToOwnedSharedStore(home: home)
+        } else {
+            addApplianceToPrivateStore()
+        }
+        dismiss()
+    }
+
+    private func addApplianceToSharedStore(home: Home) {
+        let homeIDStr = home.id.uuidString
+        do {
+            let homeObj = cloudSharingService.findHomeManagedObject(id: home.id)
+            let applianceObj = try cloudSharingService.insertIntoSharedStore(entityName: "Appliance") { obj in
+                obj.setValue(UUID(), forKey: "id")
+                obj.setValue(name, forKey: "name")
+                obj.setValue(type.rawValue, forKey: "type")
+                obj.setValue(manufacturer, forKey: "manufacturer")
+                obj.setValue(modelNumber, forKey: "modelNumber")
+                obj.setValue(room, forKey: "room")
+                obj.setValue(notes, forKey: "notes")
+                obj.setValue(Date(), forKey: "createdAt")
+                obj.setValue(homeIDStr, forKey: "homeIDString")
+                obj.setValue(homeObj, forKey: "home")
+                if hasPurchaseDate { obj.setValue(purchaseDate, forKey: "purchaseDate") }
+                if hasWarranty { obj.setValue(warrantyExpiration, forKey: "warrantyExpiration") }
+            }
+            for data in photoData {
+                try cloudSharingService.insertIntoSharedStore(entityName: "AppliancePhoto") { obj in
+                    obj.setValue(UUID(), forKey: "id")
+                    obj.setValue(data, forKey: "imageData")
+                    obj.setValue(Date(), forKey: "createdAt")
+                    obj.setValue(applianceObj, forKey: "appliance")
+                }
+            }
+            try cloudSharingService.saveSharedContext()
+        } catch {
+            print("[AddAppliance] Shared store insert failed: \(error)")
+        }
+    }
+
+    private func addApplianceToOwnedSharedStore(home: Home) {
+        let homeIDStr = home.id.uuidString
+        do {
+            let homeObj = cloudSharingService.findHomeManagedObject(id: home.id)
+            let applianceObj = try cloudSharingService.insertLinkedToHome(entityName: "Appliance") { obj in
+                obj.setValue(UUID(), forKey: "id")
+                obj.setValue(name, forKey: "name")
+                obj.setValue(type.rawValue, forKey: "type")
+                obj.setValue(manufacturer, forKey: "manufacturer")
+                obj.setValue(modelNumber, forKey: "modelNumber")
+                obj.setValue(room, forKey: "room")
+                obj.setValue(notes, forKey: "notes")
+                obj.setValue(Date(), forKey: "createdAt")
+                obj.setValue(homeIDStr, forKey: "homeIDString")
+                obj.setValue(homeObj, forKey: "home")
+                if hasPurchaseDate { obj.setValue(purchaseDate, forKey: "purchaseDate") }
+                if hasWarranty { obj.setValue(warrantyExpiration, forKey: "warrantyExpiration") }
+            }
+            for data in photoData {
+                try cloudSharingService.insertLinkedToHome(entityName: "AppliancePhoto") { obj in
+                    obj.setValue(UUID(), forKey: "id")
+                    obj.setValue(data, forKey: "imageData")
+                    obj.setValue(Date(), forKey: "createdAt")
+                    obj.setValue(applianceObj, forKey: "appliance")
+                }
+            }
+            try cloudSharingService.saveSharedContext()
+        } catch {
+            NSLog("[AddAppliance] Owner-shared insert failed: \(error)")
+        }
+    }
+
+    private func addApplianceToPrivateStore() {
         let appliance = Appliance(
             name: name,
             type: type,
             manufacturer: manufacturer,
             modelNumber: modelNumber
         )
-        
-        if hasPurchaseDate {
-            appliance.purchaseDate = purchaseDate
-        }
-        
-        if hasWarranty {
-            appliance.warrantyExpiration = warrantyExpiration
-        }
-        
+        if hasPurchaseDate { appliance.purchaseDate = purchaseDate }
+        if hasWarranty { appliance.warrantyExpiration = warrantyExpiration }
         appliance.notes = notes
         appliance.room = room
         if let home, !cloudSharingService.isInSharedStore(entityName: "Home", id: home.id) {
             appliance.home = home
         }
         appliance.homeIDString = home?.id.uuidString
-
         modelContext.insert(appliance)
-
         for data in photoData {
             appliance.addPhoto(data: data)
         }
-
-        dismiss()
     }
 }
 
