@@ -6,13 +6,11 @@
 //
 
 import SwiftUI
-import SwiftData
 import CoreData
 
 // MARK: - Outer shell (navigation, toolbar, sheets)
 
 struct MaintenanceTasksView: View {
-    @Environment(\.modelContext) private var modelContext
     @Environment(HomeManager.self) private var homeManager
     @Environment(NavigationCoordinator.self) private var coordinator
     @Environment(CloudSharingService.self) private var cloudSharingService
@@ -29,11 +27,11 @@ struct MaintenanceTasksView: View {
         NavigationStack {
             Group {
                 if let home = homeManager.currentHome {
-                    // HomeTasksList builds its @Query predicate from homeID in init so the
-                    // filter runs at the SQLite level — no SwiftData relationship faulting.
-                    // .id() forces full recreation (and a fresh @Query fetch) whenever
-                    // sharedStoreVersion changes — CoreData-level saves and CloudKit imports
-                    // bypass SwiftData's observation hooks so @Query won't auto-update otherwise.
+                    // HomeTasksList builds its @FetchRequest predicate from homeID in init so the
+                    // filter runs at the SQLite level.
+                    // .id() forces full recreation (and a fresh @FetchRequest fetch) whenever
+                    // sharedStoreVersion changes — CoreData saves and CloudKit imports
+                    // bypass SwiftUI's observation hooks so @FetchRequest won't auto-update otherwise.
                     HomeTasksList(home: home, sortOption: sortOption)
                         .id(cloudSharingService.sharedStoreVersion)
                 } else {
@@ -98,16 +96,15 @@ struct MaintenanceTasksView: View {
     }
 }
 
-// MARK: - Inner list (owns @Query with SQL predicate)
+// MARK: - Inner list (owns @FetchRequest with SQL predicate)
 
-// Splitting into a child view is the SwiftUI pattern for dynamic @Query predicates.
-// The predicate `task.home?.id == homeID` is compiled by #Predicate into a CoreData
-// keypath expression evaluated at the SQLite level — it never calls ModelContext.fulfill,
+// Splitting into a child view is the SwiftUI pattern for dynamic @FetchRequest predicates.
+// The NSPredicate `homeIDString == %@ OR home.id == %@` is evaluated at the SQLite level
 // so it is safe for tasks in the dynamically-added CloudKit shared store.
 private struct HomeTasksList: View {
     let home: Home
     let sortOption: TaskSortOption
-    @Query private var homeTasks: [MaintenanceTask]
+    @FetchRequest private var homeTasks: FetchedResults<MaintenanceTask>
     @Environment(CloudSharingService.self) private var cloudSharingService
 
     init(home: Home, sortOption: TaskSortOption) {
@@ -116,15 +113,14 @@ private struct HomeTasksList: View {
         let homeIDStr = home.id.uuidString
         let homeID = home.id
         NSLog("[HomeTasksList] init — homeIDStr=\(homeIDStr)")
-        // Match by homeIDString (new items, including shared-home additions where home==nil)
-        // OR by the home relationship (old shared-store tasks that predate the scalar field).
-        // The home?.id comparison is evaluated at SQL level by #Predicate — safe for shared-store.
-        _homeTasks = Query(
-            filter: #Predicate<MaintenanceTask> { task in
-                task.homeIDString == homeIDStr || task.home?.id == homeID
-            },
-            sort: \MaintenanceTask.nextDue
+        let fr = NSFetchRequest<MaintenanceTask>(entityName: "MaintenanceTask")
+        fr.predicate = NSPredicate(
+            format: "homeIDString == %@ OR home.id == %@",
+            homeIDStr,
+            homeID as NSUUID
         )
+        fr.sortDescriptors = [NSSortDescriptor(key: "nextDue", ascending: true)]
+        _homeTasks = FetchRequest(fetchRequest: fr)
     }
 
     // Regular maintenance tasks (not from projects). Use sourceProjectIDString scalar
@@ -190,7 +186,7 @@ private struct HomeTasksList: View {
         return (try? container.viewContext.fetch(req).count) ?? -1
     }
 
-    /// Tasks in CoreData whose homeIDString matches the current home — bypasses @Query
+    /// Tasks in CoreData whose homeIDString matches the current home — bypasses @FetchRequest
     /// to isolate whether a predicate mismatch is hiding imported records.
     private var matchingCoreDataTaskCount: Int {
         guard let container = cloudSharingService.persistentCloudKitContainer else { return -1 }
@@ -237,11 +233,9 @@ private struct HomeTasksList: View {
         }
         .overlay(alignment: .bottomTrailing) {
             // Always-visible sync diagnostic panel.
-            // q = @Query result count (tasks shown in list)
+            // q = @FetchRequest result count (tasks shown in list)
             // db = all CoreData MaintenanceTask records across all stores
             // m = CoreData tasks whose homeIDString matches this home
-            // xp prv/shr = last private / shared CloudKit export event result
-            // im prv/shr = last private / shared CloudKit import event result
             VStack(alignment: .trailing, spacing: 2) {
                 Text("q:\(homeTasks.count) db:\(allCoreDataTaskCount) m:\(matchingCoreDataTaskCount)")
                 Text("add:\(cloudSharingService.lastTaskAddPath)")
@@ -499,7 +493,4 @@ struct ClosedTasksView: View {
     }
 }
 
-#Preview {
-    MaintenanceTasksView()
-        .modelContainer(for: [MaintenanceTask.self, MaintenanceRecord.self], inMemory: true)
-}
+#Preview { Text("Preview unavailable") }

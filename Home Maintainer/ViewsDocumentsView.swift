@@ -4,7 +4,7 @@
 //
 
 import SwiftUI
-import SwiftData
+import CoreData
 
 // MARK: - Search Result Model
 
@@ -49,13 +49,13 @@ private enum DocumentSearchHit: Identifiable {
 // MARK: - Root Documents View
 
 struct DocumentsView: View {
-    @Environment(\.modelContext) private var modelContext
+    @Environment(\.managedObjectContext) private var viewContext
     @Environment(HomeManager.self) private var homeManager
-    @Query(sort: \DocumentSection.createdAt) private var allSections: [DocumentSection]
-    @Query(sort: \Appliance.name) private var allAppliances: [Appliance]
-    @Query(sort: \RepairProject.title) private var allProjects: [RepairProject]
-    @Query(sort: \MaintenanceTask.name) private var allTasks: [MaintenanceTask]
-    @Query private var allHomeDocuments: [HomeDocument]
+    @FetchRequest(sortDescriptors: [SortDescriptor(\.createdAt)]) private var allSections: FetchedResults<DocumentSection>
+    @FetchRequest(sortDescriptors: [SortDescriptor(\.name)]) private var allAppliances: FetchedResults<Appliance>
+    @FetchRequest(sortDescriptors: [SortDescriptor(\.title)]) private var allProjects: FetchedResults<RepairProject>
+    @FetchRequest(sortDescriptors: [SortDescriptor(\.name)]) private var allTasks: FetchedResults<MaintenanceTask>
+    @FetchRequest(sortDescriptors: [SortDescriptor(\.createdAt)]) private var allHomeDocuments: FetchedResults<HomeDocument>
     @State private var showingAddSection = false
     @State private var showingHomePicker = false
     @State private var searchText = ""
@@ -69,7 +69,7 @@ struct DocumentsView: View {
         guard let home = homeManager.currentHome else { return [] }
         return allAppliances.filter {
             $0.homeIDString == home.id.uuidString &&
-            (!($0.documents ?? []).isEmpty || !($0.homeDocuments ?? []).isEmpty)
+            (!$0.documents.isEmpty || ($0.homeDocuments?.count ?? 0) > 0)
         }
     }
 
@@ -83,7 +83,7 @@ struct DocumentsView: View {
         let linkedProjectIDs = Set(homeDocuments.flatMap { $0.linkedProjectIDs })
         return allProjects.filter {
             $0.homeIDString == home.id.uuidString &&
-            (!($0.projectDocuments ?? []).isEmpty || linkedProjectIDs.contains($0.id))
+            (!$0.projectDocuments.isEmpty || linkedProjectIDs.contains($0.id))
         }
     }
 
@@ -102,7 +102,7 @@ struct DocumentsView: View {
         // Search HomeDocuments within user sections
         for section in sections {
             let sectionMatches = section.name.lowercased().contains(query)
-            for doc in (section.documents ?? []) {
+            for doc in section.documentArray {
                 guard !seenIDs.contains(doc.id) else { continue }
                 let titleMatches = doc.title.lowercased().contains(query)
                 let fileMatches = (doc.attachmentName ?? "").lowercased().contains(query)
@@ -116,7 +116,7 @@ struct DocumentsView: View {
         // Search ApplianceDocuments and linked HomeDocuments, deduplicated by ID
         for appliance in appliancesWithDocuments {
             let applianceMatches = appliance.name.lowercased().contains(query)
-            for doc in (appliance.documents ?? []) {
+            for doc in appliance.documents {
                 guard !seenIDs.contains(doc.id) else { continue }
                 let displayMatches = doc.displayName.lowercased().contains(query)
                 let fileMatches = doc.name.lowercased().contains(query)
@@ -126,7 +126,7 @@ struct DocumentsView: View {
                 }
             }
             // HomeDocuments linked to this appliance (section cleared, so not found via sections loop)
-            for doc in (appliance.homeDocuments ?? []) {
+            for doc in (appliance.homeDocuments as? Set<HomeDocument> ?? []) {
                 guard !seenIDs.contains(doc.id) else { continue }
                 let displayTitle = doc.title.isEmpty ? (doc.attachmentName ?? "") : doc.title
                 let titleMatches = displayTitle.lowercased().contains(query)
@@ -184,7 +184,7 @@ struct DocumentsView: View {
                         NavigationLink(destination: AppliancesFolderView(appliances: appliancesWithDocuments)) {
                             FolderRow(name: "Appliances", systemImage: "refrigerator",
                                       count: appliancesWithDocuments.reduce(0) {
-                                          $0 + ($1.documents?.count ?? 0) + ($1.homeDocuments?.count ?? 0)
+                                          $0 + $1.documents.count + ($1.homeDocuments?.count ?? 0)
                                       })
                         }
                     }
@@ -199,7 +199,7 @@ struct DocumentsView: View {
 
                     // Auto-generated Projects folder
                     if !projectsWithDocuments.isEmpty {
-                        let projectDocCount = projectsWithDocuments.reduce(0) { $0 + ($1.projectDocuments?.count ?? 0) }
+                        let projectDocCount = projectsWithDocuments.reduce(0) { $0 + $1.projectDocuments.count }
                         let homeDocProjectCount = homeDocuments.filter { !$0.linkedProjectIDs.isEmpty }.count
                         NavigationLink(destination: ProjectsFolderView(projects: projectsWithDocuments)) {
                             FolderRow(name: "Projects", systemImage: "hammer",
@@ -217,7 +217,10 @@ struct DocumentsView: View {
                         }
                     }
                     .onDelete { offsets in
-                        offsets.map { sections[$0] }.forEach { modelContext.delete($0) }
+                        offsets.map { sections[$0] }.forEach {
+                            viewContext.delete($0)
+                        }
+                        try? viewContext.save()
                     }
                 }
             }
@@ -297,25 +300,20 @@ private struct FolderRow: View {
 // MARK: - User Section Folder
 
 struct DocumentSectionFolderView: View {
-    @Environment(\.modelContext) private var modelContext
-    @Bindable var section: DocumentSection
+    @Environment(\.managedObjectContext) private var viewContext
+    let section: DocumentSection
     let home: Home?
     @State private var showingAddDocument = false
-    @Query private var documents: [HomeDocument]
+    @FetchRequest private var documents: FetchedResults<HomeDocument>
 
     init(section: DocumentSection, home: Home?) {
         self.section = section
         self.home = home
         let sectionIDStr = section.id.uuidString
-        let sectionID = section.id
-        // Match by sectionIDString scalar (new docs) OR by the section relationship (pre-existing docs).
-        // Both comparisons are evaluated at SQL level by #Predicate — safe for shared-store objects.
-        _documents = Query(
-            filter: #Predicate<HomeDocument> { doc in
-                doc.sectionIDString == sectionIDStr || doc.section?.id == sectionID
-            },
-            sort: \HomeDocument.createdAt
-        )
+        let request = NSFetchRequest<HomeDocument>(entityName: "HomeDocument")
+        request.predicate = NSPredicate(format: "sectionIDString == %@", sectionIDStr)
+        request.sortDescriptors = [NSSortDescriptor(key: "createdAt", ascending: true)]
+        _documents = FetchRequest(fetchRequest: request)
     }
 
     var body: some View {
@@ -328,7 +326,8 @@ struct DocumentSectionFolderView: View {
                 }
             }
             .onDelete { offsets in
-                offsets.map { documents[$0] }.forEach { modelContext.delete($0) }
+                offsets.map { documents[$0] }.forEach { viewContext.delete($0) }
+                try? viewContext.save()
             }
 
             Button {
@@ -361,7 +360,7 @@ struct AppliancesFolderView: View {
                             VStack(alignment: .leading, spacing: 2) {
                                 Text(appliance.name)
                                     .font(.body)
-                                let count = (appliance.documents?.count ?? 0) + (appliance.homeDocuments?.count ?? 0)
+                                let count = appliance.documents.count + (appliance.homeDocuments?.count ?? 0)
                                 Text("\(count) \(count == 1 ? "document" : "documents")")
                                     .font(.caption)
                                     .foregroundStyle(.secondary)
@@ -387,11 +386,11 @@ struct ApplianceDocumentsFolderView: View {
     @State private var selectedHomeDocument: HomeDocument?
 
     private var documents: [ApplianceDocument] {
-        appliance.documents ?? []
+        appliance.documents
     }
 
     private var linkedHomeDocuments: [HomeDocument] {
-        (appliance.homeDocuments ?? []).sorted { $0.createdAt < $1.createdAt }
+        (appliance.homeDocuments as? Set<HomeDocument> ?? []).sorted { $0.createdAt < $1.createdAt }
     }
 
     var body: some View {
@@ -491,7 +490,7 @@ struct DocumentRowView: View {
 
 struct TasksFolderView: View {
     let tasks: [MaintenanceTask]
-    @Query private var allHomeDocuments: [HomeDocument]
+    @FetchRequest(sortDescriptors: [SortDescriptor(\.createdAt)]) private var allHomeDocuments: FetchedResults<HomeDocument>
 
     var body: some View {
         List {
@@ -528,7 +527,7 @@ struct TasksFolderView: View {
 struct TaskDocumentsFolderView: View {
     @Environment(NavigationCoordinator.self) private var coordinator
     let task: MaintenanceTask
-    @Query private var allHomeDocuments: [HomeDocument]
+    @FetchRequest(sortDescriptors: [SortDescriptor(\.createdAt)]) private var allHomeDocuments: FetchedResults<HomeDocument>
     @State private var selectedHomeDocument: HomeDocument?
 
     private var linkedDocuments: [HomeDocument] {
@@ -590,7 +589,7 @@ struct TaskDocumentsFolderView: View {
 
 struct ProjectsFolderView: View {
     let projects: [RepairProject]
-    @Query private var allHomeDocuments: [HomeDocument]
+    @FetchRequest(sortDescriptors: [SortDescriptor(\.createdAt)]) private var allHomeDocuments: FetchedResults<HomeDocument>
 
     var body: some View {
         List {
@@ -605,7 +604,7 @@ struct ProjectsFolderView: View {
                             VStack(alignment: .leading, spacing: 2) {
                                 Text(project.title)
                                     .font(.body)
-                                let projDocs = project.projectDocuments?.count ?? 0
+                                let projDocs = project.projectDocuments.count
                                 let homeDocs = allHomeDocuments.filter { $0.linkedProjectIDs.contains(project.id) }.count
                                 let count = projDocs + homeDocs
                                 Text("\(count) \(count == 1 ? "document" : "documents")")
@@ -629,12 +628,12 @@ struct ProjectDocumentsFolderView: View {
     @Environment(NavigationCoordinator.self) private var coordinator
     let project: RepairProject
     var highlightDocumentID: UUID? = nil
-    @Query private var allHomeDocuments: [HomeDocument]
+    @FetchRequest(sortDescriptors: [SortDescriptor(\.createdAt)]) private var allHomeDocuments: FetchedResults<HomeDocument>
     @State private var selectedDocument: ProjectDocument?
     @State private var selectedHomeDocument: HomeDocument?
 
     private var documents: [ProjectDocument] {
-        project.projectDocuments ?? []
+        project.projectDocuments
     }
 
     private var linkedHomeDocuments: [HomeDocument] {
@@ -718,7 +717,7 @@ struct ProjectDocumentsFolderView: View {
 // MARK: - Add Section Sheet
 
 struct AddDocumentSectionView: View {
-    @Environment(\.modelContext) private var modelContext
+    @Environment(\.managedObjectContext) private var viewContext
     @Environment(\.dismiss) private var dismiss
     @Environment(CloudSharingService.self) private var cloudSharingService
     let home: Home?
@@ -740,12 +739,12 @@ struct AddDocumentSectionView: View {
                 }
                 ToolbarItem(placement: .confirmationAction) {
                     Button("Add") {
-                        let section = DocumentSection(name: name.trimmingCharacters(in: .whitespaces))
+                        let section = DocumentSection.make(name: name.trimmingCharacters(in: .whitespaces), in: viewContext)
                         if let home, !cloudSharingService.isInSharedStore(entityName: "Home", id: home.id) {
                             section.home = home
                         }
                         section.homeIDString = home?.id.uuidString
-                        modelContext.insert(section)
+                        try? viewContext.save()
                         dismiss()
                     }
                     .disabled(name.trimmingCharacters(in: .whitespaces).isEmpty)
@@ -756,10 +755,17 @@ struct AddDocumentSectionView: View {
 }
 
 #Preview {
-    NavigationStack {
+    let model = AppDataModel.buildModel()
+    let container = NSPersistentContainer(name: "Preview", managedObjectModel: model)
+    let desc = NSPersistentStoreDescription()
+    desc.type = NSInMemoryStoreType
+    container.persistentStoreDescriptions = [desc]
+    container.loadPersistentStores { _, _ in }
+
+    return NavigationStack {
         DocumentsView()
     }
-    .modelContainer(for: [DocumentSection.self, HomeDocument.self, Appliance.self], inMemory: true)
+    .environment(\.managedObjectContext, container.viewContext)
     .environment(HomeManager())
     .environment(NavigationCoordinator())
 }

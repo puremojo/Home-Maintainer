@@ -6,14 +6,13 @@
 //
 
 import SwiftUI
-import SwiftData
 import CoreData
 
 struct AddMaintenanceTaskView: View {
-    @Environment(\.modelContext) private var modelContext
+    @Environment(\.managedObjectContext) private var viewContext
     @Environment(\.dismiss) private var dismiss
     @Environment(CloudSharingService.self) private var cloudSharingService
-    @Query(sort: \Appliance.name) private var appliances: [Appliance]
+    @FetchRequest(sortDescriptors: [SortDescriptor(\.name)]) private var appliances: FetchedResults<Appliance>
 
     let home: Home?
 
@@ -28,11 +27,11 @@ struct AddMaintenanceTaskView: View {
     init(home: Home? = nil) {
         self.home = home
     }
-    
+
     let predefinedFrequencies: [TaskFrequency] = [
         .once, .daily, .weekly, .biweekly, .monthly, .quarterly, .biannually, .annually
     ]
-    
+
     var body: some View {
         NavigationStack {
             Form {
@@ -41,7 +40,7 @@ struct AddMaintenanceTaskView: View {
                     TextField("Description", text: $description, axis: .vertical)
                         .lineLimit(3...6)
                 }
-                
+
                 RoomFieldSection(room: $room)
 
                 Section("Frequency") {
@@ -51,7 +50,7 @@ struct AddMaintenanceTaskView: View {
                         }
                     }
                 }
-                
+
                 Section("Link to Appliance") {
                     Picker("Appliance", selection: $selectedAppliance) {
                         Text("None").tag(nil as Appliance?)
@@ -64,7 +63,7 @@ struct AddMaintenanceTaskView: View {
                         }
                     }
                     .disabled(appliances.isEmpty)
-                    
+
                     if appliances.isEmpty {
                         Text("No appliances added yet")
                             .font(.caption)
@@ -82,7 +81,7 @@ struct AddMaintenanceTaskView: View {
                         dismiss()
                     }
                 }
-                
+
                 ToolbarItem(placement: .confirmationAction) {
                     Button("Add") {
                         addTask()
@@ -92,22 +91,15 @@ struct AddMaintenanceTaskView: View {
             }
         }
     }
-    
+
     private func addTask() {
         let isSharedHome = home.map {
             cloudSharingService.isInSharedStore(entityName: "Home", id: $0.id)
         } ?? false
 
         if isSharedHome, let home {
-            // PARTICIPANT: home lives in the shared CloudKit store.
             addTaskToSharedStore(home: home)
         } else if let home {
-            // OWNER: home is in the private store (whether or not it has been shared).
-            // Always use the CoreData path so the task is assigned to the private store
-            // and zone inference places it in the home's CloudKit zone (shared zone when
-            // the home has a CKShare, _defaultZone otherwise).
-            // Avoids isOwnedAndShared() which requires fetchShares() and silently falls
-            // through to addTaskToPrivateStore() when CloudKit sync hasn't completed yet.
             addTaskToOwnedSharedStore(home: home)
         } else {
             addTaskToPrivateStore()
@@ -147,8 +139,6 @@ struct AddMaintenanceTaskView: View {
                 }
                 allObjects.append(linkObj)
             }
-            // Explicitly add to the home's CKShare zone so the records are visible to all
-            // participants. Relies on zone inference as a fallback if the share can't be fetched.
             cloudSharingService.addObjectsToHomeShare(objects: allObjects, homeID: home.id)
         } catch {
             NSLog("[AddMaintenanceTask] Shared store insert failed: \(error)")
@@ -159,13 +149,6 @@ struct AddMaintenanceTaskView: View {
         let freq = selectedFrequency
         let homeIDStr = home.id.uuidString
         do {
-            // task.home is intentionally NOT set here. Setting it before
-            // addObjectsToOwnerShare calls container.share would mark the home object
-            // as modified in the CoreData context. container.share then traverses ALL
-            // modified context objects and reaches homeObj.tasks (a faulted collection
-            // on the saved home) inside performBlockAndWait → EXC_CRASH SIGABRT.
-            // addObjectsToOwnerShare sets task.home in its container.share callback,
-            // after the traversal is complete.
             let taskObj = try cloudSharingService.insertLinkedToHome(entityName: "MaintenanceTask") { obj in
                 let taskID = UUID()
                 obj.setValue(taskID, forKey: "id")
@@ -198,25 +181,26 @@ struct AddMaintenanceTaskView: View {
     }
 
     private func addTaskToPrivateStore() {
-        let task = MaintenanceTask(
+        let task = MaintenanceTask.make(
             name: name,
             description: description,
             frequency: selectedFrequency,
+            room: room,
             appliance: selectedAppliance,
-            room: room
+            in: viewContext
         )
         if let home, !cloudSharingService.isInSharedStore(entityName: "Home", id: home.id) {
             task.home = home
         }
         task.homeIDString = home?.id.uuidString
         NSLog("[AddMaintenanceTask] PRIVATE path — task '\(task.name)' id=\(task.id) homeIDString=\(task.homeIDString ?? "nil") homeRelSet=\(task.home != nil)")
-        modelContext.insert(task)
 
         for draft in productDrafts where !draft.isEmpty {
-            let product = ProductLink(name: draft.name, urlString: draft.urlString, imageData: draft.imageData)
+            let product = ProductLink.make(name: draft.name, urlString: draft.urlString, imageData: draft.imageData, in: viewContext)
             product.task = task
-            modelContext.insert(product)
         }
+
+        try? viewContext.save()
 
         Task {
             await CalendarService.shared.addTaskEvent(task: task)
@@ -225,6 +209,13 @@ struct AddMaintenanceTaskView: View {
 }
 
 #Preview {
-    AddMaintenanceTaskView()
-        .modelContainer(for: MaintenanceTask.self, inMemory: true)
+    let model = AppDataModel.buildModel()
+    let container = NSPersistentContainer(name: "Preview", managedObjectModel: model)
+    let desc = NSPersistentStoreDescription()
+    desc.type = NSInMemoryStoreType
+    container.persistentStoreDescriptions = [desc]
+    container.loadPersistentStores { _, _ in }
+    return AddMaintenanceTaskView()
+        .environment(\.managedObjectContext, container.viewContext)
+        .environment(CloudSharingService(container: NSPersistentCloudKitContainer(name: "preview", managedObjectModel: model)))
 }

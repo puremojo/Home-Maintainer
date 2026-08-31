@@ -6,11 +6,11 @@
 //
 
 import SwiftUI
-import SwiftData
+import CoreData
 import PhotosUI
 
 struct AddApplianceView: View {
-    @Environment(\.modelContext) private var modelContext
+    @Environment(\.managedObjectContext) private var viewContext
     @Environment(\.dismiss) private var dismiss
     @Environment(CloudSharingService.self) private var cloudSharingService
 
@@ -32,7 +32,7 @@ struct AddApplianceView: View {
     @State private var hasWarranty = false
     @State private var photoPickerItems: [PhotosPickerItem] = []
     @State private var photoData: [Data] = []
-    
+
     var body: some View {
         NavigationStack {
             Form {
@@ -45,13 +45,13 @@ struct AddApplianceView: View {
                         }
                     }
                 }
-                
+
                 Section("Details") {
                     TextField("Manufacturer", text: $manufacturer)
                     TextField("Model Number", text: $modelNumber)
                     TextField("Room", text: $room)
                 }
-                
+
                 Section {
                     Toggle("Set Purchase Date", isOn: $hasPurchaseDate)
                     if hasPurchaseDate {
@@ -61,7 +61,7 @@ struct AddApplianceView: View {
                         ), displayedComponents: .date)
                     }
                 }
-                
+
                 Section {
                     Toggle("Set Warranty Expiration", isOn: $hasWarranty)
                     if hasWarranty {
@@ -71,7 +71,7 @@ struct AddApplianceView: View {
                         ), displayedComponents: .date)
                     }
                 }
-                
+
                 Section {
                     if !photoData.isEmpty {
                         ScrollView(.horizontal, showsIndicators: false) {
@@ -117,7 +117,7 @@ struct AddApplianceView: View {
                         dismiss()
                     }
                 }
-                
+
                 ToolbarItem(placement: .confirmationAction) {
                     Button("Add") {
                         addAppliance()
@@ -166,7 +166,7 @@ struct AddApplianceView: View {
             let applianceObj = try cloudSharingService.insertIntoSharedStore(entityName: "Appliance") { obj in
                 obj.setValue(UUID(), forKey: "id")
                 obj.setValue(name, forKey: "name")
-                obj.setValue(type.rawValue, forKey: "type")
+                obj.setValue(type.rawValue, forKey: "typeRaw")
                 obj.setValue(manufacturer, forKey: "manufacturer")
                 obj.setValue(modelNumber, forKey: "modelNumber")
                 obj.setValue(room, forKey: "room")
@@ -198,7 +198,7 @@ struct AddApplianceView: View {
             let applianceObj = try cloudSharingService.insertLinkedToHome(entityName: "Appliance") { obj in
                 obj.setValue(UUID(), forKey: "id")
                 obj.setValue(name, forKey: "name")
-                obj.setValue(type.rawValue, forKey: "type")
+                obj.setValue(type.rawValue, forKey: "typeRaw")
                 obj.setValue(manufacturer, forKey: "manufacturer")
                 obj.setValue(modelNumber, forKey: "modelNumber")
                 obj.setValue(room, forKey: "room")
@@ -224,11 +224,12 @@ struct AddApplianceView: View {
     }
 
     private func addApplianceToPrivateStore() {
-        let appliance = Appliance(
+        let appliance = Appliance.make(
             name: name,
             type: type,
             manufacturer: manufacturer,
-            modelNumber: modelNumber
+            modelNumber: modelNumber,
+            in: viewContext
         )
         if hasPurchaseDate { appliance.purchaseDate = purchaseDate }
         if hasWarranty { appliance.warrantyExpiration = warrantyExpiration }
@@ -238,14 +239,11 @@ struct AddApplianceView: View {
             appliance.home = home
         }
         appliance.homeIDString = home?.id.uuidString
-        modelContext.insert(appliance)
         for data in photoData {
-            appliance.addPhoto(data: data)
+            appliance.addPhoto(data: data, in: viewContext)
         }
+        try? viewContext.save()
     }
 }
 
-#Preview {
-    AddApplianceView()
-        .modelContainer(for: Appliance.self, inMemory: true)
-}
+#Preview { Text("Preview unavailable") }

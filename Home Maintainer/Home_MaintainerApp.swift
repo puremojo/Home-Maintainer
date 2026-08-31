@@ -2,11 +2,9 @@
 //  Home_MaintainerApp.swift
 //  Home Maintainer
 //
-//  Created by Michael Estrada on 11/11/24.
-//
 
 import SwiftUI
-import SwiftData
+import CoreData
 import FirebaseCore
 import FirebaseAppCheck
 
@@ -22,11 +20,6 @@ struct Home_MaintainerApp: App {
     @State private var homeManager = HomeManager()
     @State private var cloudSharingService: CloudSharingService
 
-    // Stored without a default value so it can be initialized in init() after
-    // CloudSharingService registers its notification observer. This ensures the
-    // NSPersistentCloudKitContainer.eventChangedNotification is never missed.
-    let sharedModelContainer: ModelContainer
-
     init() {
         #if DEBUG
         AppCheck.setAppCheckProviderFactory(AppCheckDebugProviderFactory())
@@ -38,55 +31,43 @@ struct Home_MaintainerApp: App {
         _geminiService = State(initialValue: GeminiService())
         _subscriptionService = State(initialValue: SubscriptionService())
 
-        // Register the CloudSharingService observer BEFORE creating the ModelContainer,
-        // so the eventChangedNotification is captured even when CloudKit is already warm.
-        let sharingService = CloudSharingService()
+        // Create the container FIRST so it can be injected into CloudSharingService.
+        // Both private and shared stores are configured at init time, which causes
+        // NSPersistentCloudKitContainer to register push-driven CloudKit subscriptions
+        // for BOTH stores — eliminating the 30-minute polling fallback.
+        let container = Self.makePersistentCloudKitContainer()
+        let sharingService = CloudSharingService(container: container)
         _cloudSharingService = State(initialValue: sharingService)
         CloudSharingService.shared = sharingService
-
-        sharedModelContainer = Self.makeModelContainer()
     }
 
-    private static func makeModelContainer() -> ModelContainer {
-        let schema = Schema([
-            Home.self,
-            MaintenanceTask.self,
-            MaintenanceRecord.self,
-            Appliance.self,
-            AppliancePhoto.self,
-            ServiceProvider.self,
-            RepairProject.self,
-            ProductLink.self,
-            ProjectContact.self,
-            Quote.self,
-            Invoice.self,
-            ChatConversation.self,
-            ChatMessageData.self,
-            ChatImageData.self,
-            DocumentSection.self,
-            HomeDocument.self
-        ])
+    static func makePersistentCloudKitContainer() -> NSPersistentCloudKitContainer {
+        let model = AppDataModel.buildModel()
+        let container = NSPersistentCloudKitContainer(name: "HomeMaintainer", managedObjectModel: model)
 
-        let modelConfiguration = ModelConfiguration(
-            schema: schema,
-            isStoredInMemoryOnly: false,
-            cloudKitDatabase: .private("iCloud.EstraDOS.Home-Maintainer")
-        )
+        let baseURL = NSPersistentContainer.defaultDirectoryURL()
 
-        do {
-            return try ModelContainer(
-                for: schema,
-                configurations: [modelConfiguration]
-            )
-        } catch {
-            // CloudKit unavailable (e.g. simulator without iCloud) — fall back to local-only store.
-            let localConfig = ModelConfiguration(schema: schema, isStoredInMemoryOnly: false, cloudKitDatabase: .none)
-            do {
-                return try ModelContainer(for: schema, configurations: [localConfig])
-            } catch {
-                fatalError("Could not create ModelContainer: \(error)")
+        let privateDesc = NSPersistentStoreDescription(url: baseURL.appendingPathComponent("HomeMaintainer.sqlite"))
+        let privateOptions = NSPersistentCloudKitContainerOptions(containerIdentifier: "iCloud.EstraDOS.Home-Maintainer")
+        privateOptions.databaseScope = .private
+        privateDesc.cloudKitContainerOptions = privateOptions
+
+        let sharedDesc = NSPersistentStoreDescription(url: baseURL.appendingPathComponent("HomeMaintainerShared.sqlite"))
+        let sharedOptions = NSPersistentCloudKitContainerOptions(containerIdentifier: "iCloud.EstraDOS.Home-Maintainer")
+        sharedOptions.databaseScope = .shared
+        sharedDesc.cloudKitContainerOptions = sharedOptions
+
+        container.persistentStoreDescriptions = [privateDesc, sharedDesc]
+
+        container.loadPersistentStores { _, error in
+            if let error {
+                fatalError("Failed to load persistent stores: \(error)")
             }
         }
+
+        container.viewContext.automaticallyMergesChangesFromParent = true
+        container.viewContext.mergePolicy = NSMergeByPropertyObjectTrumpMergePolicy
+        return container
     }
 
     var body: some Scene {
@@ -99,15 +80,15 @@ struct Home_MaintainerApp: App {
                 .environment(subscriptionService)
                 .environment(homeManager)
                 .environment(cloudSharingService)
+                .environment(\.managedObjectContext, cloudSharingService.viewContext)
                 .onOpenURL { url in
                     homeManager.pendingImportURL = url
                 }
         }
-        .modelContainer(sharedModelContainer)
     }
 }
 
-// MARK: - AppDelegate (routes scene connections to SceneDelegate for CloudKit share acceptance)
+// MARK: - AppDelegate
 
 class AppDelegate: NSObject, UIApplicationDelegate {
     func application(
@@ -115,8 +96,6 @@ class AppDelegate: NSObject, UIApplicationDelegate {
         didFinishLaunchingWithOptions launchOptions: [UIApplication.LaunchOptionsKey: Any]? = nil
     ) -> Bool {
         // Register with APNS so CloudKit can deliver silent push notifications to this device.
-        // Without this call, NSPersistentCloudKitContainer never receives a device token and
-        // falls back to periodic polling (~30 min) instead of near-instant push-driven sync.
         application.registerForRemoteNotifications()
         return true
     }
@@ -131,10 +110,6 @@ class AppDelegate: NSObject, UIApplicationDelegate {
         return config
     }
 
-    // Without this handler, iOS has no signal to grant the app background time when
-    // CloudKit sends a silent push saying shared-zone data has changed. NSPersistentCloudKitContainer
-    // handles the actual fetch internally; we just need to acknowledge the notification so iOS
-    // gives the container enough time to complete the import.
     func application(
         _ application: UIApplication,
         didReceiveRemoteNotification userInfo: [AnyHashable: Any],

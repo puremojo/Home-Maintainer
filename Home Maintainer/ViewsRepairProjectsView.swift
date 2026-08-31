@@ -6,13 +6,13 @@
 //
 
 import SwiftUI
-import SwiftData
+import CoreData
 
 struct RepairProjectsView: View {
-    @Environment(\.modelContext) private var modelContext
+    @Environment(\.managedObjectContext) private var viewContext
     @Environment(HomeManager.self) private var homeManager
     @Environment(NavigationCoordinator.self) private var coordinator
-    @Query private var allProjectsRaw: [RepairProject]
+    @FetchRequest(sortDescriptors: []) private var allProjectsRaw: FetchedResults<RepairProject>
     @State private var showingAddProject = false
     @State private var showingHomePicker = false
     @State private var selectedStatus: ProjectStatus?
@@ -30,22 +30,22 @@ struct RepairProjectsView: View {
             return p1.createdAt > p2.createdAt
         }
     }
-    
+
     var filteredProjects: [RepairProject] {
         if let status = selectedStatus {
             return projects.filter { $0.status == status }
         }
         return projects
     }
-    
+
     var activeProjects: [RepairProject] {
         projects.filter { $0.status != .completed && $0.status != .cancelled }
     }
-    
+
     var completedProjects: [RepairProject] {
         projects.filter { $0.status == .completed }
     }
-    
+
     var body: some View {
         NavigationStack {
             Group {
@@ -144,7 +144,7 @@ struct RepairProjectsView: View {
             }
         }
     }
-    
+
     private func handlePendingNavigation() {
         if let project = coordinator.pendingProject {
             navigationTarget = project
@@ -154,14 +154,15 @@ struct RepairProjectsView: View {
 
     private func deleteProjects(at offsets: IndexSet, from projectList: [RepairProject]) {
         for index in offsets {
-            modelContext.delete(projectList[index])
+            viewContext.delete(projectList[index])
         }
+        try? viewContext.save()
     }
 }
 
 struct ProjectRow: View {
     let project: RepairProject
-    
+
     var body: some View {
         if project.isDeleted {
             EmptyView()
@@ -170,37 +171,37 @@ struct ProjectRow: View {
                 HStack {
                     Text(project.title)
                         .font(.headline)
-                    
+
                     Spacer()
-                    
+
                     HStack(spacing: 4) {
                         Image(systemName: project.priority.systemImage)
                             .font(.caption)
                             .foregroundStyle(project.priority.color)
-                        
+
                         Image(systemName: project.status.systemImage)
                             .font(.caption)
                             .foregroundStyle(.secondary)
                     }
                 }
-                
+
                 HStack {
                     Label(project.category.rawValue, systemImage: project.category.systemImage)
                         .font(.caption)
                         .foregroundStyle(.secondary)
-                    
+
                     Text("•")
                         .font(.caption)
                         .foregroundStyle(.secondary)
-                    
+
                     Text(project.status.rawValue)
                         .font(.caption)
                         .foregroundStyle(.secondary)
-                    
+
                     Text("•")
                         .font(.caption)
                         .foregroundStyle(.secondary)
-                    
+
                     HStack(spacing: 2) {
                         Image(systemName: project.priority.systemImage)
                             .font(.caption2)
@@ -209,13 +210,13 @@ struct ProjectRow: View {
                     .font(.caption)
                     .foregroundStyle(project.priority.color)
                 }
-                
+
                 if let hiredProvider = project.hiredProvider {
                     Text("Hired: \(hiredProvider.name)")
                         .font(.caption)
                         .foregroundStyle(.blue)
                 }
-                
+
                 if let quotesCount = project.quotes?.count, quotesCount > 0 {
                     Text("\(quotesCount) quote\(quotesCount == 1 ? "" : "s")")
                         .font(.caption)
@@ -227,7 +228,4 @@ struct ProjectRow: View {
     }
 }
 
-#Preview {
-    RepairProjectsView()
-        .modelContainer(for: RepairProject.self, inMemory: true)
-}
+#Preview { Text("Preview unavailable") }

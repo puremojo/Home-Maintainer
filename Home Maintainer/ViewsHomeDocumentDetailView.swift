@@ -4,7 +4,7 @@
 //
 
 import SwiftUI
-import SwiftData
+import CoreData
 import PDFKit
 import VisionKit
 
@@ -25,14 +25,17 @@ func extractDocumentText(data: Data, contentType: String) -> String? {
 // MARK: - Detail View
 
 struct HomeDocumentDetailView: View {
-    @Environment(\.modelContext) private var modelContext
+    @Environment(\.managedObjectContext) private var viewContext
     @Environment(HomeManager.self) private var homeManager
     @Environment(CloudSharingService.self) private var cloudSharingService
-    @Query(sort: \MaintenanceTask.name) private var allTasks: [MaintenanceTask]
-    @Query(sort: \Appliance.name) private var allAppliances: [Appliance]
-    @Query(sort: \RepairProject.title) private var allProjects: [RepairProject]
-    @Bindable var document: HomeDocument
+    @FetchRequest(sortDescriptors: [SortDescriptor(\.name)]) private var allTasks: FetchedResults<MaintenanceTask>
+    @FetchRequest(sortDescriptors: [SortDescriptor(\.name)]) private var allAppliances: FetchedResults<Appliance>
+    @FetchRequest(sortDescriptors: [SortDescriptor(\.title)]) private var allProjects: FetchedResults<RepairProject>
+    var document: HomeDocument
 
+    @State private var title: String = ""
+    @State private var linkedTaskIDs: [UUID] = []
+    @State private var linkedProjectIDs: [UUID] = []
     @State private var showingDocumentPicker = false
     @State private var showingAttachment = false
     @State private var showingTaskPicker = false
@@ -56,11 +59,11 @@ struct HomeDocumentDetailView: View {
     }
 
     private var linkedTasks: [MaintenanceTask] {
-        homeTasks.filter { document.linkedTaskIDs.contains($0.id) }
+        homeTasks.filter { linkedTaskIDs.contains($0.id) }
     }
 
     private var linkedProjects: [RepairProject] {
-        homeProjects.filter { document.linkedProjectIDs.contains($0.id) }
+        homeProjects.filter { linkedProjectIDs.contains($0.id) }
     }
 
     private var applianceBinding: Binding<Appliance?> {
@@ -71,6 +74,7 @@ struct HomeDocumentDetailView: View {
                 if newValue != nil {
                     document.section = nil
                 }
+                try? viewContext.save()
             }
         )
     }
@@ -78,7 +82,14 @@ struct HomeDocumentDetailView: View {
     var body: some View {
         List {
             Section("Title") {
-                TextField("Document Title", text: $document.title)
+                TextField("Document Title", text: $title, onCommit: {
+                    document.title = title
+                    try? viewContext.save()
+                })
+                .onChange(of: title) { _, newValue in
+                    document.title = newValue
+                    try? viewContext.save()
+                }
             }
 
             Section {
@@ -117,6 +128,7 @@ struct HomeDocumentDetailView: View {
                             document.attachmentData = nil
                             document.attachmentName = nil
                             document.attachmentContentType = nil
+                            try? viewContext.save()
                         }
                     }
                 }
@@ -155,6 +167,7 @@ struct HomeDocumentDetailView: View {
                     .swipeActions {
                         Button("Remove", role: .destructive) {
                             document.linkedAppliance = nil
+                            try? viewContext.save()
                         }
                     }
                 }
@@ -185,7 +198,9 @@ struct HomeDocumentDetailView: View {
                 }
                 .onDelete { offsets in
                     let idsToRemove = offsets.map { linkedTasks[$0].id }
-                    document.linkedTaskIDs.removeAll { idsToRemove.contains($0) }
+                    linkedTaskIDs.removeAll { idsToRemove.contains($0) }
+                    document.linkedTaskIDs = linkedTaskIDs
+                    try? viewContext.save()
                 }
 
                 Button {
@@ -209,7 +224,9 @@ struct HomeDocumentDetailView: View {
                 }
                 .onDelete { offsets in
                     let idsToRemove = offsets.map { linkedProjects[$0].id }
-                    document.linkedProjectIDs.removeAll { idsToRemove.contains($0) }
+                    linkedProjectIDs.removeAll { idsToRemove.contains($0) }
+                    document.linkedProjectIDs = linkedProjectIDs
+                    try? viewContext.save()
                 }
 
                 Button {
@@ -223,6 +240,11 @@ struct HomeDocumentDetailView: View {
         }
         .navigationTitle(document.title.isEmpty ? "Document" : document.title)
         .navigationBarTitleDisplayMode(.inline)
+        .onAppear {
+            title = document.title
+            linkedTaskIDs = document.linkedTaskIDs
+            linkedProjectIDs = document.linkedProjectIDs
+        }
         .sheet(isPresented: $showingDocumentPicker) {
             DocumentPicker { url, name in
                 addAttachment(from: url, name: name)
@@ -234,6 +256,7 @@ struct HomeDocumentDetailView: View {
                     document.attachmentData = pdfData
                     document.attachmentName = "Scanned Document.pdf"
                     document.attachmentContentType = "pdf"
+                    try? viewContext.save()
                 }
                 showingScanner = false
             } onCancel: {
@@ -247,10 +270,18 @@ struct HomeDocumentDetailView: View {
             }
         }
         .sheet(isPresented: $showingTaskPicker) {
-            SelectTasksForDocumentView(selectedTaskIDs: $document.linkedTaskIDs, tasks: homeTasks)
+            SelectTasksForDocumentView(selectedTaskIDs: $linkedTaskIDs, tasks: homeTasks)
+                .onDisappear {
+                    document.linkedTaskIDs = linkedTaskIDs
+                    try? viewContext.save()
+                }
         }
         .sheet(isPresented: $showingProjectPicker) {
-            SelectProjectsForDocumentView(selectedProjectIDs: $document.linkedProjectIDs, projects: homeProjects)
+            SelectProjectsForDocumentView(selectedProjectIDs: $linkedProjectIDs, projects: homeProjects)
+                .onDisappear {
+                    document.linkedProjectIDs = linkedProjectIDs
+                    try? viewContext.save()
+                }
         }
         .sheet(isPresented: $showingAppliancePicker) {
             SelectApplianceForDocumentView(selectedAppliance: applianceBinding, appliances: homeAppliances)
@@ -262,19 +293,20 @@ struct HomeDocumentDetailView: View {
         document.attachmentData = data
         document.attachmentName = name
         document.attachmentContentType = url.pathExtension
+        try? viewContext.save()
     }
 }
 
 // MARK: - Add Document Sheet
 
 struct AddHomeDocumentView: View {
-    @Environment(\.modelContext) private var modelContext
+    @Environment(\.managedObjectContext) private var viewContext
     @Environment(\.dismiss) private var dismiss
     @Environment(HomeManager.self) private var homeManager
     @Environment(CloudSharingService.self) private var cloudSharingService
-    @Query(sort: \MaintenanceTask.name) private var allTasks: [MaintenanceTask]
-    @Query(sort: \Appliance.name) private var allAppliances: [Appliance]
-    @Query(sort: \RepairProject.title) private var allProjects: [RepairProject]
+    @FetchRequest(sortDescriptors: [SortDescriptor(\.name)]) private var allTasks: FetchedResults<MaintenanceTask>
+    @FetchRequest(sortDescriptors: [SortDescriptor(\.name)]) private var allAppliances: FetchedResults<Appliance>
+    @FetchRequest(sortDescriptors: [SortDescriptor(\.title)]) private var allProjects: FetchedResults<RepairProject>
 
     let section: DocumentSection
     let home: Home?
@@ -467,7 +499,7 @@ struct AddHomeDocumentView: View {
     }
 
     private func save() {
-        let doc = HomeDocument(title: title.trimmingCharacters(in: .whitespaces))
+        let doc = HomeDocument.make(title: title.trimmingCharacters(in: .whitespaces), in: viewContext)
         doc.attachmentData = attachmentData
         doc.attachmentName = attachmentName
         doc.attachmentContentType = attachmentContentType
@@ -491,7 +523,7 @@ struct AddHomeDocumentView: View {
            !cloudSharingService.isInSharedStore(entityName: "Appliance", id: appliance.id) {
             doc.linkedAppliance = appliance
         }
-        modelContext.insert(doc)
+        try? viewContext.save()
         dismiss()
     }
 }

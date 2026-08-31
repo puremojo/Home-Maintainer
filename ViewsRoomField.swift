@@ -6,13 +6,13 @@
 //
 
 import SwiftUI
-import SwiftData
+import CoreData
 
 /// A "Room" section with a free-text field plus tappable suggestions drawn from
 /// rooms already entered on other tasks (e.g. tap "Kitchen" to reuse it).
 struct RoomFieldSection: View {
     @Binding var room: String
-    @Query private var tasks: [MaintenanceTask]
+    @FetchRequest(sortDescriptors: []) private var tasks: FetchedResults<MaintenanceTask>
 
     /// Distinct, non-empty rooms used on existing tasks, filtered to match what
     /// the user has typed and excluding an exact match of the current value.

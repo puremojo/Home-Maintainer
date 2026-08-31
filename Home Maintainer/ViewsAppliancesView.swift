@@ -6,13 +6,13 @@
 //
 
 import SwiftUI
-import SwiftData
+import CoreData
 
 struct AppliancesView: View {
-    @Environment(\.modelContext) private var modelContext
+    @Environment(\.managedObjectContext) private var viewContext
     @Environment(HomeManager.self) private var homeManager
     @Environment(NavigationCoordinator.self) private var coordinator
-    @Query(sort: \Appliance.name) private var allAppliances: [Appliance]
+    @FetchRequest(sortDescriptors: [SortDescriptor(\.name)]) private var allAppliances: FetchedResults<Appliance>
     @State private var showingAddAppliance = false
     @State private var showingHomePicker = false
     @State private var navigationTarget: Appliance? = nil
@@ -90,8 +90,9 @@ struct AppliancesView: View {
 
     private func deleteAppliances(offsets: IndexSet) {
         for index in offsets {
-            modelContext.delete(appliances[index])
+            viewContext.delete(appliances[index])
         }
+        try? viewContext.save()
     }
 }
 
@@ -152,9 +153,4 @@ struct ApplianceRow: View {
     }
 }
 
-#Preview {
-    AppliancesView()
-        .modelContainer(for: Appliance.self, inMemory: true)
-        .environment(NavigationCoordinator())
-        .environment(HomeManager())
-}
+#Preview { Text("Preview unavailable") }

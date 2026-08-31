@@ -4,44 +4,56 @@
 //
 
 import Foundation
-import SwiftData
+import CoreData
 
-@Model
-final class Home {
-    var id: UUID = UUID()
-    var name: String = ""
-    var address: String = ""
-    var createdDate: Date = Date()
-    var ownerName: String = ""
-    var isLocallyCreated: Bool = true
+@objc(Home)
+public final class Home: NSManagedObject, Identifiable {
+    @NSManaged public var id: UUID
+    @NSManaged public var name: String
+    @NSManaged public var address: String
+    @NSManaged public var createdDate: Date
+    @NSManaged public var ownerName: String
+    @NSManaged public var isLocallyCreated: Bool
 
-    @Relationship(deleteRule: .cascade, inverse: \MaintenanceTask.home)
-    var tasks: [MaintenanceTask]?
+    // Relationships (NSSet for Core Data; typed accessors below)
+    @NSManaged public var tasks: NSSet?
+    @NSManaged public var appliances: NSSet?
+    @NSManaged public var serviceProviders: NSSet?
+    @NSManaged public var projects: NSSet?
+    @NSManaged public var documentSections: NSSet?
+    @NSManaged public var homeDocuments: NSSet?
 
-    @Relationship(deleteRule: .cascade, inverse: \Appliance.home)
-    var appliances: [Appliance]?
+    // MARK: - Typed relationship helpers
 
-    @Relationship(deleteRule: .cascade, inverse: \ServiceProvider.home)
-    var serviceProviders: [ServiceProvider]?
+    public var taskArray: [MaintenanceTask] {
+        (tasks as? Set<MaintenanceTask>)?.sorted { $0.createdAt < $1.createdAt } ?? []
+    }
 
-    @Relationship(deleteRule: .cascade, inverse: \RepairProject.home)
-    var projects: [RepairProject]?
+    public var applianceArray: [Appliance] {
+        (appliances as? Set<Appliance>)?.sorted { $0.name < $1.name } ?? []
+    }
 
-    // chatConversations removed: ChatConversation now stores homeID: UUID? instead of
-    // a SwiftData relationship, keeping chat outside the CloudKit zone share for a Home.
+    public var documentSectionArray: [DocumentSection] {
+        (documentSections as? Set<DocumentSection>)?.sorted { $0.sortOrder < $1.sortOrder } ?? []
+    }
 
-    @Relationship(deleteRule: .cascade, inverse: \DocumentSection.home)
-    var documentSections: [DocumentSection]?
+    // MARK: - Convenience factory
 
-    @Relationship(deleteRule: .cascade, inverse: \HomeDocument.home)
-    var homeDocuments: [HomeDocument]?
-
-    init(name: String, address: String = "", ownerName: String = "", isLocallyCreated: Bool = true) {
-        self.id = UUID()
-        self.name = name
-        self.address = address
-        self.createdDate = Date()
-        self.ownerName = ownerName
-        self.isLocallyCreated = isLocallyCreated
+    @discardableResult
+    static func make(
+        name: String,
+        ownerName: String = "",
+        address: String = "",
+        isLocallyCreated: Bool = true,
+        in context: NSManagedObjectContext
+    ) -> Home {
+        let home = Home(context: context)
+        home.id = UUID()
+        home.name = name
+        home.ownerName = ownerName
+        home.address = address
+        home.isLocallyCreated = isLocallyCreated
+        home.createdDate = Date()
+        return home
     }
 }

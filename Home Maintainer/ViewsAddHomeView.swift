@@ -4,10 +4,10 @@
 //
 
 import SwiftUI
-import SwiftData
+import CoreData
 
 struct AddHomeView: View {
-    @Environment(\.modelContext) private var modelContext
+    @Environment(\.managedObjectContext) private var viewContext
     @Environment(\.dismiss) private var dismiss
     @Environment(HomeManager.self) private var homeManager
     @Environment(AuthService.self) private var authService
@@ -61,14 +61,14 @@ struct AddHomeView: View {
     }
 
     private func saveHome() {
-        let home = Home(
+        let home = Home.make(
             name: homeName.trimmingCharacters(in: .whitespaces),
-            address: address.trimmingCharacters(in: .whitespaces),
             ownerName: authService.displayName,
-            isLocallyCreated: true
+            address: address.trimmingCharacters(in: .whitespaces),
+            isLocallyCreated: true,
+            in: viewContext
         )
-        modelContext.insert(home)
-        try? modelContext.save()
+        try? viewContext.save()
         homeManager.select(home)
         dismiss()
     }

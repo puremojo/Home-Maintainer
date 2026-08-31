@@ -6,15 +6,15 @@
 //
 
 import SwiftUI
-import SwiftData
+import CoreData
 
 struct MaintenanceTaskDetailView: View {
-    @Environment(\.modelContext) private var modelContext
+    @Environment(\.managedObjectContext) private var viewContext
     @Environment(NavigationCoordinator.self) private var coordinator
     @Environment(CloudSharingService.self) private var cloudSharingService
-    @Query private var allAppliances: [Appliance]
-    @Query private var allHomeDocuments: [HomeDocument]
-    @Bindable var task: MaintenanceTask
+    @FetchRequest(sortDescriptors: [SortDescriptor(\.name)]) private var allAppliances: FetchedResults<Appliance>
+    @FetchRequest(sortDescriptors: []) private var allHomeDocuments: FetchedResults<HomeDocument>
+    var task: MaintenanceTask
     @State private var showingCloseSheet = false
     @State private var showingCloseOccurrenceSheet = false
     @State private var showingAppliancePicker = false
@@ -79,13 +79,13 @@ struct MaintenanceTaskDetailView: View {
             EditMaintenanceTaskView(task: task, isSharedTask: isSharedTask)
         }
         .sheet(isPresented: $showingCloseSheet) {
-            CloseTaskSheet(task: task, isPermanent: true, modelContext: modelContext)
+            CloseTaskSheet(task: task, isPermanent: true)
         }
         .sheet(isPresented: $showingCloseOccurrenceSheet) {
-            CloseTaskSheet(task: task, isPermanent: false, modelContext: modelContext)
+            CloseTaskSheet(task: task, isPermanent: false)
         }
         .sheet(isPresented: $showingAppliancePicker) {
-            SelectApplianceView(task: task, allAppliances: allAppliances)
+            SelectApplianceView(task: task, allAppliances: Array(allAppliances))
         }
         .sheet(item: $editingRecord) { record in
             EditRecordNotesView(record: record)
@@ -96,6 +96,7 @@ struct MaintenanceTaskDetailView: View {
         .sheet(isPresented: $showingTaskDocumentPicker) {
             AddDocumentSheet { title, fileName, data, contentType in
                 task.addDocument(name: fileName, data: data, contentType: contentType, title: title)
+                try? viewContext.save()
             }
         }
         .sheet(item: $selectedTaskDocument) { doc in
@@ -195,6 +196,7 @@ struct MaintenanceTaskDetailView: View {
         // We pass task.safeFrequency (decoded from frequencyEncoded string) to avoid
         // reading task.frequency (Codable transformable — crashes for shared-store objects).
         task.updateFrequency(task.safeFrequency)
+        try? viewContext.save()
         cloudSharingService.insertMaintenanceRecord(
             taskID: task.id,
             completedDate: Date(),
@@ -215,7 +217,7 @@ struct MaintenanceTaskDetailView: View {
         }
 
         LiveProductsSection(
-            products: task.products ?? [],
+            products: task.productArray,
             detach: { $0.task = nil },
             onAdd: { productEditorTarget = .add },
             onEdit: { productEditorTarget = .edit($0) }
@@ -226,12 +228,14 @@ struct MaintenanceTaskDetailView: View {
             if isDone {
                 Button {
                     task.lastCompleted = nil
+                    try? viewContext.save()
                 } label: {
                     Label("Reopen Task", systemImage: "arrow.uturn.backward.circle")
                 }
             } else {
                 Button {
                     task.lastCompleted = Date()
+                    try? viewContext.save()
                 } label: {
                     Label("Close Task", systemImage: "checkmark.circle")
                 }
@@ -344,9 +348,10 @@ struct MaintenanceTaskDetailView: View {
             }
         }
 
-        if let records = task.records, !records.isEmpty {
+        let records = task.recordArray
+        if !records.isEmpty {
             Section("History") {
-                ForEach(records.sorted(by: { $0.completedDate > $1.completedDate })) { record in
+                ForEach(records) { record in
                     Button {
                         editingRecord = record
                     } label: {
@@ -358,15 +363,15 @@ struct MaintenanceTaskDetailView: View {
 
                                 Spacer()
 
-                                Text(record.action.rawValue)
+                                Text(record.taskAction.rawValue)
                                     .font(.caption)
                                     .fontWeight(.semibold)
-                                    .foregroundStyle(record.action.badgeColor)
+                                    .foregroundStyle(record.taskAction.badgeColor)
                                     .padding(.horizontal, 8)
                                     .padding(.vertical, 2)
                                     .background(
                                         Capsule()
-                                            .fill(record.action.badgeColor.opacity(0.15))
+                                            .fill(record.taskAction.badgeColor.opacity(0.15))
                                     )
                             }
 
@@ -387,14 +392,14 @@ struct MaintenanceTaskDetailView: View {
         }
 
         LiveProductsSection(
-            products: task.products ?? [],
+            products: task.productArray,
             detach: { $0.task = nil },
             onAdd: { productEditorTarget = .add },
             onEdit: { productEditorTarget = .edit($0) }
         )
 
         Section {
-            ForEach(task.taskDocuments ?? []) { document in
+            ForEach(task.taskDocuments) { document in
                 Button {
                     selectedTaskDocument = document
                 } label: {
@@ -421,7 +426,7 @@ struct MaintenanceTaskDetailView: View {
                 }
             }
             .onDelete { offsets in
-                let docs = task.taskDocuments ?? []
+                let docs = task.taskDocuments
                 for index in offsets { task.removeDocument(docs[index]) }
             }
 
@@ -450,14 +455,17 @@ struct MaintenanceTaskDetailView: View {
         }
 
         Section {
-            Toggle("Active", isOn: $task.isActive)
+            Toggle("Active", isOn: Binding(
+                get: { task.isActive },
+                set: { task.isActive = $0; try? viewContext.save() }
+            ))
         }
     }
 
     private func reopenTask() {
         task.reopen()
-        let record = MaintenanceRecord(task: task, completedDate: Date(), notes: "Task reopened", action: .reopened)
-        modelContext.insert(record)
+        MaintenanceRecord.make(task: task, completedDate: Date(), notes: "Task reopened", action: .reopened, in: viewContext)
+        try? viewContext.save()
     }
 }
 
@@ -465,10 +473,10 @@ struct MaintenanceTaskDetailView: View {
 
 struct CloseTaskSheet: View {
     @Environment(\.dismiss) private var dismiss
+    @Environment(\.managedObjectContext) private var viewContext
     @Environment(CloudSharingService.self) private var cloudSharingService
     let task: MaintenanceTask
     let isPermanent: Bool
-    let modelContext: ModelContext
 
     @State private var completionDate = Date()
     @State private var notes = ""
@@ -522,9 +530,9 @@ struct CloseTaskSheet: View {
                 action: action
             )
         } else {
-            let record = MaintenanceRecord(task: task, completedDate: completionDate, notes: notes, action: action)
-            modelContext.insert(record)
+            MaintenanceRecord.make(task: task, completedDate: completionDate, notes: notes, action: action, in: viewContext)
         }
+        try? viewContext.save()
         dismiss()
     }
 }
@@ -533,7 +541,8 @@ struct CloseTaskSheet: View {
 
 struct SelectApplianceView: View {
     @Environment(\.dismiss) private var dismiss
-    @Bindable var task: MaintenanceTask
+    @Environment(\.managedObjectContext) private var viewContext
+    let task: MaintenanceTask
     let allAppliances: [Appliance]
 
     var body: some View {
@@ -542,6 +551,7 @@ struct SelectApplianceView: View {
                 Section {
                     Button {
                         task.appliance = nil
+                        try? viewContext.save()
                         dismiss()
                     } label: {
                         HStack {
@@ -559,6 +569,7 @@ struct SelectApplianceView: View {
                         ForEach(allAppliances) { appliance in
                             Button {
                                 task.appliance = appliance
+                                try? viewContext.save()
                                 dismiss()
                             } label: {
                                 HStack {
@@ -594,8 +605,15 @@ struct SelectApplianceView: View {
 
 struct EditRecordNotesView: View {
     @Environment(\.dismiss) private var dismiss
-    @Bindable var record: MaintenanceRecord
+    @Environment(\.managedObjectContext) private var viewContext
+    let record: MaintenanceRecord
+    @State private var notes: String
     @FocusState private var isFocused: Bool
+
+    init(record: MaintenanceRecord) {
+        self.record = record
+        _notes = State(initialValue: record.notes)
+    }
 
     var body: some View {
         NavigationStack {
@@ -605,13 +623,13 @@ struct EditRecordNotesView: View {
                         Text(record.completedDate, format: .dateTime.month().day().year().hour().minute())
                     }
                     LabeledContent("Action") {
-                        Text(record.action.rawValue)
-                            .foregroundStyle(record.action == .closed ? .green : .orange)
+                        Text(record.taskAction.rawValue)
+                            .foregroundStyle(record.taskAction == .closed ? .green : .orange)
                     }
                 }
 
                 Section("Notes") {
-                    TextField("Add notes about this completion...", text: $record.notes, axis: .vertical)
+                    TextField("Add notes about this completion...", text: $notes, axis: .vertical)
                         .lineLimit(3...10)
                         .focused($isFocused)
                 }
@@ -623,7 +641,11 @@ struct EditRecordNotesView: View {
                     Button("Cancel") { dismiss() }
                 }
                 ToolbarItem(placement: .confirmationAction) {
-                    Button("Done") { dismiss() }
+                    Button("Done") {
+                        record.notes = notes
+                        try? viewContext.save()
+                        dismiss()
+                    }
                 }
             }
             .onAppear {
@@ -635,8 +657,9 @@ struct EditRecordNotesView: View {
 
 struct EditMaintenanceTaskView: View {
     @Environment(\.dismiss) private var dismiss
-    @Query(sort: \Appliance.name) private var appliances: [Appliance]
-    @Bindable var task: MaintenanceTask
+    @Environment(\.managedObjectContext) private var viewContext
+    @FetchRequest(sortDescriptors: [SortDescriptor(\.name)]) private var appliances: FetchedResults<Appliance>
+    let task: MaintenanceTask
     let isSharedTask: Bool
 
     @State private var name: String
@@ -732,18 +755,10 @@ struct EditMaintenanceTaskView: View {
         if task.safeFrequency != selectedFrequency {
             task.updateFrequency(selectedFrequency)
         }
+        try? viewContext.save()
     }
 }
 
 #Preview {
-    let config = ModelConfiguration(isStoredInMemoryOnly: true)
-    let container = try! ModelContainer(for: MaintenanceTask.self, configurations: config)
-
-    let task = MaintenanceTask(name: "Change HVAC Filter", description: "Replace air filter", frequency: .monthly)
-    container.mainContext.insert(task)
-
-    return NavigationStack {
-        MaintenanceTaskDetailView(task: task)
-    }
-    .modelContainer(container)
+    Text("Preview unavailable")
 }

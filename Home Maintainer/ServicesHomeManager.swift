@@ -4,7 +4,6 @@
 //
 
 import Foundation
-import SwiftData
 import CoreData
 
 @Observable

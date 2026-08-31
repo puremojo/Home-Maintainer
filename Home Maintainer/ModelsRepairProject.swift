@@ -1,81 +1,237 @@
 //
-//  RepairProject.swift
+//  ModelsRepairProject.swift
 //  Home Maintainer
-//
-//  Created by Michael Estrada on 11/11/24.
 //
 
 import Foundation
-import SwiftData
+import CoreData
 import SwiftUI
 
-@Model
-final class RepairProject {
-    var id: UUID = UUID()
-    var title: String = ""
-    var projectDescription: String = ""
-    var category: ServiceCategory = ServiceCategory.other
-    var status: ProjectStatus = ProjectStatus.planning
-    var priority: ProjectPriority = ProjectPriority.medium
-    @Relationship(deleteRule: .cascade, inverse: \ProjectContact.project)
-    var contacts: [ProjectContact]?
-    @Relationship(deleteRule: .cascade, inverse: \Quote.project)
-    var quotes: [Quote]?
-    @Relationship(deleteRule: .cascade, inverse: \ProductLink.project)
-    var products: [ProductLink]?
-    @Relationship(deleteRule: .cascade, inverse: \Invoice.project)
-    var invoice: Invoice?
-    var hiredProvider: ServiceProvider?
-    var startDate: Date?
-    var completionDate: Date?
-    var notes: String = ""
-    var projectDocuments: [ProjectDocument]?
-    var createdAt: Date = Date()
-    var home: Home?
-    // Scalar mirror of home?.id.uuidString — safe to compare without triggering
-    // ModelContext.fulfill on shared-store objects.
-    var homeIDString: String? = nil
-    @Relationship(deleteRule: .cascade, inverse: \MaintenanceTask.sourceProject)
-    var subTasks: [MaintenanceTask]?
-    var workDates: [ProjectWorkDate]?
-    var totalCost: Double?
+// MARK: - RepairProject
 
-    init(title: String, description: String, category: ServiceCategory, priority: ProjectPriority = .medium) {
-        self.id = UUID()
-        self.title = title
-        self.projectDescription = description
-        self.category = category
-        self.status = .planning
-        self.priority = priority
-        self.notes = ""
-        self.projectDocuments = []
-        self.createdAt = Date()
+@objc(RepairProject)
+public final class RepairProject: NSManagedObject, Identifiable {
+    @NSManaged public var id: UUID
+    @NSManaged public var title: String
+    @NSManaged public var projectDescription: String
+    @NSManaged private var categoryRaw: String
+    @NSManaged private var statusRaw: String
+    @NSManaged private var priorityRaw: Int32
+    @NSManaged public var startDate: Date?
+    @NSManaged public var completionDate: Date?
+    @NSManaged public var notes: String
+    @NSManaged public var createdAt: Date
+    @NSManaged public var homeIDString: String?
+    @NSManaged public var totalCost: Double
+    @NSManaged private var projectDocumentsJSON: String?
+    @NSManaged private var workDatesJSON: String?
+
+    // Relationships
+    @NSManaged public var home: Home?
+    @NSManaged public var hiredProvider: ServiceProvider?
+    @NSManaged public var contacts: NSSet?
+    @NSManaged public var quotes: NSSet?
+    @NSManaged public var products: NSSet?
+    @NSManaged public var invoice: Invoice?
+    @NSManaged public var subTasks: NSSet?
+
+    // MARK: - Enum properties
+
+    var category: ServiceCategory {
+        get { ServiceCategory(rawValue: categoryRaw) ?? .other }
+        set { categoryRaw = newValue.rawValue }
+    }
+
+    var status: ProjectStatus {
+        get { ProjectStatus(rawValue: statusRaw) ?? .planning }
+        set { statusRaw = newValue.rawValue }
+    }
+
+    var priority: ProjectPriority {
+        get { ProjectPriority(rawValue: Int(priorityRaw)) ?? .medium }
+        set { priorityRaw = Int32(newValue.rawValue) }
+    }
+
+    // MARK: - JSON-backed array attributes
+
+    var projectDocuments: [ProjectDocument] {
+        get { jsonDecode(from: projectDocumentsJSON) ?? [] }
+        set { projectDocumentsJSON = jsonEncode(newValue) }
     }
 
     func addDocument(name: String, data: Data, contentType: String, title: String = "") {
-        let document = ProjectDocument(name: name, data: data, contentType: contentType, title: title)
-        if projectDocuments == nil { projectDocuments = [] }
-        projectDocuments?.append(document)
+        var docs = projectDocuments
+        docs.append(ProjectDocument(name: name, data: data, contentType: contentType, title: title))
+        projectDocuments = docs
     }
 
     func removeDocument(_ document: ProjectDocument) {
-        projectDocuments?.removeAll { $0.id == document.id }
+        projectDocuments = projectDocuments.filter { $0.id != document.id }
     }
 
-    var totalQuotedAmount: Double {
-        quotes?.reduce(0) { $0 + $1.amount } ?? 0
+    var workDates: [ProjectWorkDate] {
+        get { jsonDecode(from: workDatesJSON) ?? [] }
+        set { workDatesJSON = jsonEncode(newValue) }
     }
 
     func addWorkDate(label: String, scheduledDate: Date, durationDays: Int = 0, durationMinutes: Int = 0) {
-        let workDate = ProjectWorkDate(label: label, scheduledDate: scheduledDate, durationDays: durationDays, durationMinutes: durationMinutes)
-        if workDates == nil { workDates = [] }
-        workDates?.append(workDate)
+        var dates = workDates
+        dates.append(ProjectWorkDate(label: label, scheduledDate: scheduledDate, durationDays: durationDays, durationMinutes: durationMinutes))
+        workDates = dates
     }
 
     func removeWorkDate(_ workDate: ProjectWorkDate) {
-        workDates?.removeAll { $0.id == workDate.id }
+        workDates = workDates.filter { $0.id != workDate.id }
+    }
+
+    // MARK: - Typed relationship helpers
+
+    var contactArray: [ProjectContact] {
+        (contacts as? Set<ProjectContact>)?.sorted { $0.contactDate > $1.contactDate } ?? []
+    }
+
+    var quoteArray: [Quote] {
+        (quotes as? Set<Quote>)?.sorted { $0.quoteDate > $1.quoteDate } ?? []
+    }
+
+    var productArray: [ProductLink] {
+        (products as? Set<ProductLink>)?.sorted { $0.createdAt < $1.createdAt } ?? []
+    }
+
+    var subTaskArray: [MaintenanceTask] {
+        (subTasks as? Set<MaintenanceTask>)?.sorted { $0.name < $1.name } ?? []
+    }
+
+    var totalQuotedAmount: Double {
+        quoteArray.reduce(0) { $0 + $1.amount }
+    }
+
+    // MARK: - Convenience factory
+
+    @discardableResult
+    static func make(
+        title: String,
+        description: String = "",
+        category: ServiceCategory,
+        priority: ProjectPriority = .medium,
+        in context: NSManagedObjectContext
+    ) -> RepairProject {
+        let project = RepairProject(context: context)
+        project.id = UUID()
+        project.title = title
+        project.projectDescription = description
+        project.categoryRaw = category.rawValue
+        project.statusRaw = ProjectStatus.planning.rawValue
+        project.priorityRaw = Int32(priority.rawValue)
+        project.notes = ""
+        project.createdAt = Date()
+        return project
     }
 }
+
+// MARK: - ProjectContact
+
+@objc(ProjectContact)
+public final class ProjectContact: NSManagedObject, Identifiable {
+    @NSManaged public var id: UUID
+    @NSManaged public var contactDate: Date
+    @NSManaged private var methodRaw: String
+    @NSManaged public var notes: String
+    @NSManaged public var wasHired: Bool
+    @NSManaged public var project: RepairProject?
+    @NSManaged public var provider: ServiceProvider?
+
+    var method: ContactMethod {
+        get { ContactMethod(rawValue: methodRaw) ?? .phone }
+        set { methodRaw = newValue.rawValue }
+    }
+
+    @discardableResult
+    static func make(
+        project: RepairProject,
+        provider: ServiceProvider,
+        method: ContactMethod = .phone,
+        notes: String = "",
+        in context: NSManagedObjectContext
+    ) -> ProjectContact {
+        let contact = ProjectContact(context: context)
+        contact.id = UUID()
+        contact.project = project
+        contact.provider = provider
+        contact.contactDate = Date()
+        contact.methodRaw = method.rawValue
+        contact.notes = notes
+        contact.wasHired = false
+        return contact
+    }
+}
+
+// MARK: - Quote
+
+@objc(Quote)
+public final class Quote: NSManagedObject, Identifiable {
+    @NSManaged public var id: UUID
+    @NSManaged public var amount: Double
+    @NSManaged public var quoteDate: Date
+    @NSManaged public var validUntil: Date?
+    @NSManaged public var details: String
+    @NSManaged public var wasAccepted: Bool
+    @NSManaged public var project: RepairProject?
+    @NSManaged public var provider: ServiceProvider?
+
+    @discardableResult
+    static func make(
+        project: RepairProject,
+        provider: ServiceProvider,
+        amount: Double,
+        in context: NSManagedObjectContext
+    ) -> Quote {
+        let quote = Quote(context: context)
+        quote.id = UUID()
+        quote.project = project
+        quote.provider = provider
+        quote.amount = amount
+        quote.quoteDate = Date()
+        quote.details = ""
+        quote.wasAccepted = false
+        return quote
+    }
+}
+
+// MARK: - Invoice
+
+@objc(Invoice)
+public final class Invoice: NSManagedObject, Identifiable {
+    @NSManaged public var id: UUID
+    @NSManaged public var amount: Double
+    @NSManaged public var invoiceDate: Date
+    @NSManaged public var dueDate: Date?
+    @NSManaged public var paidDate: Date?
+    @NSManaged public var isPaid: Bool
+    @NSManaged public var details: String
+    @NSManaged public var project: RepairProject?
+    @NSManaged public var provider: ServiceProvider?
+
+    @discardableResult
+    static func make(
+        project: RepairProject,
+        provider: ServiceProvider,
+        amount: Double,
+        in context: NSManagedObjectContext
+    ) -> Invoice {
+        let invoice = Invoice(context: context)
+        invoice.id = UUID()
+        invoice.project = project
+        invoice.provider = provider
+        invoice.amount = amount
+        invoice.invoiceDate = Date()
+        invoice.isPaid = false
+        invoice.details = ""
+        return invoice
+    }
+}
+
+// MARK: - Enums
 
 enum ProjectPriority: Int, Codable, CaseIterable, Comparable {
     case low = 0
@@ -122,35 +278,14 @@ enum ProjectStatus: String, Codable, CaseIterable {
 
     var systemImage: String {
         switch self {
-        case .planning: return "lightbulb"
+        case .planning:         return "lightbulb"
         case .requestingQuotes: return "envelope"
-        case .reviewingQuotes: return "doc.text.magnifyingglass"
-        case .hired: return "checkmark.circle"
-        case .inProgress: return "hammer"
-        case .completed: return "checkmark.circle.fill"
-        case .cancelled: return "xmark.circle"
+        case .reviewingQuotes:  return "doc.text.magnifyingglass"
+        case .hired:            return "checkmark.circle"
+        case .inProgress:       return "hammer"
+        case .completed:        return "checkmark.circle.fill"
+        case .cancelled:        return "xmark.circle"
         }
-    }
-}
-
-@Model
-final class ProjectContact {
-    var id: UUID = UUID()
-    var project: RepairProject?
-    var provider: ServiceProvider?
-    var contactDate: Date = Date()
-    var method: ContactMethod = ContactMethod.phone
-    var notes: String = ""
-    var wasHired: Bool = false
-
-    init(project: RepairProject, provider: ServiceProvider, contactDate: Date = Date(), method: ContactMethod = .phone, notes: String = "") {
-        self.id = UUID()
-        self.project = project
-        self.provider = provider
-        self.contactDate = contactDate
-        self.method = method
-        self.notes = notes
-        self.wasHired = false
     }
 }
 
@@ -162,32 +297,12 @@ enum ContactMethod: String, Codable, CaseIterable {
     case other = "Other"
 }
 
-@Model
-final class Quote {
-    var id: UUID = UUID()
-    var project: RepairProject?
-    var provider: ServiceProvider?
-    var amount: Double = 0
-    var quoteDate: Date = Date()
-    var validUntil: Date?
-    var details: String = ""
-    var wasAccepted: Bool = false
-
-    init(project: RepairProject, provider: ServiceProvider, amount: Double, quoteDate: Date = Date()) {
-        self.id = UUID()
-        self.project = project
-        self.provider = provider
-        self.amount = amount
-        self.quoteDate = quoteDate
-        self.details = ""
-        self.wasAccepted = false
-    }
-}
+// MARK: - Codable value types
 
 struct ProjectDocument: Codable, Identifiable {
     let id: UUID
-    let name: String        // actual file name
-    var title: String       // user-provided display title (empty = use name)
+    let name: String
+    var title: String
     let data: Data
     let contentType: String
     let dateAdded: Date
@@ -201,7 +316,6 @@ struct ProjectDocument: Codable, Identifiable {
         self.dateAdded = Date()
     }
 
-    // Backward-compat: old records lack `title`
     enum CodingKeys: String, CodingKey {
         case id, name, title, data, contentType, dateAdded
     }
@@ -220,9 +334,9 @@ struct ProjectDocument: Codable, Identifiable {
 
     var fileExtension: String {
         if contentType.contains("pdf") { return "pdf" }
-        else if contentType.contains("word") { return "doc" }
-        else if contentType.contains("text") { return "txt" }
-        else { return "file" }
+        if contentType.contains("word") || contentType.contains("doc") { return "doc" }
+        if contentType.contains("text") { return "txt" }
+        return "file"
     }
 
     var systemImage: String {
@@ -239,8 +353,8 @@ struct ProjectWorkDate: Codable, Identifiable {
     let id: UUID
     var label: String
     var scheduledDate: Date
-    var durationDays: Int    // multi-day projects (e.g. pool removal)
-    var durationMinutes: Int // hours + minutes encoded as total minutes
+    var durationDays: Int
+    var durationMinutes: Int
 
     enum CodingKeys: String, CodingKey {
         case id, label, scheduledDate, durationDays, durationMinutes
@@ -254,7 +368,6 @@ struct ProjectWorkDate: Codable, Identifiable {
         self.durationMinutes = durationMinutes
     }
 
-    // Backward-compat: old records lack durationDays
     init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
         id = try c.decode(UUID.self, forKey: .id)
@@ -268,34 +381,10 @@ struct ProjectWorkDate: Codable, Identifiable {
         let hours = durationMinutes / 60
         let mins = durationMinutes % 60
         guard durationDays > 0 || hours > 0 || mins > 0 else { return nil }
-
         var parts: [String] = []
         if durationDays > 0 { parts.append("\(durationDays)d") }
         if hours > 0 { parts.append("\(hours)h") }
         if mins > 0 { parts.append("\(mins)m") }
         return parts.joined(separator: " ")
-    }
-}
-
-@Model
-final class Invoice {
-    var id: UUID = UUID()
-    var project: RepairProject?
-    var provider: ServiceProvider?
-    var amount: Double = 0
-    var invoiceDate: Date = Date()
-    var dueDate: Date?
-    var paidDate: Date?
-    var isPaid: Bool = false
-    var details: String = ""
-
-    init(project: RepairProject, provider: ServiceProvider, amount: Double, invoiceDate: Date = Date()) {
-        self.id = UUID()
-        self.project = project
-        self.provider = provider
-        self.amount = amount
-        self.invoiceDate = invoiceDate
-        self.isPaid = false
-        self.details = ""
     }
 }

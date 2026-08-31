@@ -4,53 +4,66 @@
 //
 
 import Foundation
-import SwiftData
+import CoreData
 
-@Model
-final class DocumentSection {
-    var id: UUID = UUID()
-    var name: String = ""
-    var sortOrder: Int = 0
-    var home: Home?
-    var homeIDString: String? = nil
-    @Relationship(deleteRule: .cascade, inverse: \HomeDocument.section)
-    var documents: [HomeDocument]?
-    var createdAt: Date = Date()
+// MARK: - DocumentSection
 
-    init(name: String, sortOrder: Int = 0) {
-        self.id = UUID()
-        self.name = name
-        self.sortOrder = sortOrder
-        self.createdAt = Date()
-        self.documents = []
+@objc(DocumentSection)
+public final class DocumentSection: NSManagedObject, Identifiable {
+    @NSManaged public var id: UUID
+    @NSManaged public var name: String
+    @NSManaged public var sortOrder: Int32
+    @NSManaged public var homeIDString: String?
+    @NSManaged public var createdAt: Date
+    @NSManaged public var home: Home?
+    @NSManaged public var documents: NSSet?
+
+    var documentArray: [HomeDocument] {
+        (documents as? Set<HomeDocument>)?.sorted { $0.createdAt < $1.createdAt } ?? []
+    }
+
+    @discardableResult
+    static func make(name: String, sortOrder: Int = 0, in context: NSManagedObjectContext) -> DocumentSection {
+        let section = DocumentSection(context: context)
+        section.id = UUID()
+        section.name = name
+        section.sortOrder = Int32(sortOrder)
+        section.createdAt = Date()
+        return section
     }
 }
 
-@Model
-final class HomeDocument {
-    var id: UUID = UUID()
-    var title: String = ""
-    @Attribute(.externalStorage) var attachmentData: Data?
-    var attachmentName: String?
-    var attachmentContentType: String?
-    var linkedTaskIDs: [UUID] = []
-    var linkedProjectIDs: [UUID] = []
-    var linkedAppliance: Appliance?
-    var section: DocumentSection?
-    var home: Home?
-    // Scalar mirrors of relationship UUIDs — safe to compare without triggering
-    // ModelContext.fulfill on shared-store objects.
-    var homeIDString: String? = nil
-    var sectionIDString: String? = nil
-    var createdAt: Date = Date()
+// MARK: - HomeDocument
 
-    init(title: String) {
-        self.id = UUID()
-        self.title = title
-        self.linkedTaskIDs = []
-        self.linkedProjectIDs = []
-        self.createdAt = Date()
+@objc(HomeDocument)
+public final class HomeDocument: NSManagedObject, Identifiable {
+    @NSManaged public var id: UUID
+    @NSManaged public var title: String
+    @NSManaged public var attachmentData: Data?
+    @NSManaged public var attachmentName: String?
+    @NSManaged public var attachmentContentType: String?
+    @NSManaged private var linkedTaskIDsJSON: String?
+    @NSManaged private var linkedProjectIDsJSON: String?
+    @NSManaged public var homeIDString: String?
+    @NSManaged public var sectionIDString: String?
+    @NSManaged public var createdAt: Date
+    @NSManaged public var linkedAppliance: Appliance?
+    @NSManaged public var section: DocumentSection?
+    @NSManaged public var home: Home?
+
+    // MARK: - JSON-backed UUID arrays
+
+    var linkedTaskIDs: [UUID] {
+        get { jsonDecode(from: linkedTaskIDsJSON) ?? [] }
+        set { linkedTaskIDsJSON = jsonEncode(newValue) }
     }
+
+    var linkedProjectIDs: [UUID] {
+        get { jsonDecode(from: linkedProjectIDsJSON) ?? [] }
+        set { linkedProjectIDsJSON = jsonEncode(newValue) }
+    }
+
+    // MARK: - Computed
 
     var fileExtension: String {
         guard let contentType = attachmentContentType else { return "file" }
@@ -67,5 +80,16 @@ final class HomeDocument {
         case "txt": return "doc.plaintext.fill"
         default: return "doc.fill"
         }
+    }
+
+    // MARK: - Convenience factory
+
+    @discardableResult
+    static func make(title: String, in context: NSManagedObjectContext) -> HomeDocument {
+        let doc = HomeDocument(context: context)
+        doc.id = UUID()
+        doc.title = title
+        doc.createdAt = Date()
+        return doc
     }
 }

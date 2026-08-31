@@ -1,96 +1,115 @@
 //
-//  Appliance.swift
+//  ModelsAppliance.swift
 //  Home Maintainer
-//
-//  Created by Michael Estrada on 11/11/24.
 //
 
 import Foundation
-import SwiftData
+import CoreData
 
-@Model
-final class Appliance {
-    var id: UUID = UUID()
-    var name: String = ""
-    var type: ApplianceType = ApplianceType.other
-    var manufacturer: String = ""
-    var modelNumber: String = ""
-    var purchaseDate: Date?
-    var warrantyExpiration: Date?
-    var notes: String = ""
-    var room: String = ""
-    var createdAt: Date = Date()
-    var documents: [ApplianceDocument]?
-    @Relationship(deleteRule: .cascade, inverse: \AppliancePhoto.appliance)
-    var photos: [AppliancePhoto]?
-    @Relationship(deleteRule: .nullify, inverse: \HomeDocument.linkedAppliance)
-    var homeDocuments: [HomeDocument]?
-    @Relationship(inverse: \MaintenanceTask.appliance)
-    var maintenanceTasks: [MaintenanceTask]?
-    var home: Home?
-    // Scalar mirror of home?.id.uuidString — safe to compare without triggering
-    // ModelContext.fulfill on shared-store objects.
-    var homeIDString: String? = nil
+// MARK: - Appliance
 
-    init(name: String, type: ApplianceType, manufacturer: String = "", modelNumber: String = "") {
-        self.id = UUID()
-        self.name = name
-        self.type = type
-        self.manufacturer = manufacturer
-        self.modelNumber = modelNumber
-        self.notes = ""
-        self.createdAt = Date()
-        self.documents = []
-        self.photos = []
+@objc(Appliance)
+public final class Appliance: NSManagedObject, Identifiable {
+    @NSManaged public var id: UUID
+    @NSManaged public var name: String
+    @NSManaged private var typeRaw: String
+    @NSManaged public var manufacturer: String
+    @NSManaged public var modelNumber: String
+    @NSManaged public var purchaseDate: Date?
+    @NSManaged public var warrantyExpiration: Date?
+    @NSManaged public var notes: String
+    @NSManaged public var room: String
+    @NSManaged public var createdAt: Date
+    @NSManaged public var homeIDString: String?
+    @NSManaged private var documentsJSON: String?
+
+    // Relationships
+    @NSManaged public var home: Home?
+    @NSManaged public var photos: NSSet?
+    @NSManaged public var maintenanceTasks: NSSet?
+    @NSManaged public var homeDocuments: NSSet?
+
+    // MARK: - Type (enum backed by typeRaw String)
+
+    var type: ApplianceType {
+        get { ApplianceType(rawValue: typeRaw) ?? .other }
+        set { typeRaw = newValue.rawValue }
+    }
+
+    // MARK: - Documents (JSON-backed [ApplianceDocument])
+
+    var documents: [ApplianceDocument] {
+        get { jsonDecode(from: documentsJSON) ?? [] }
+        set { documentsJSON = jsonEncode(newValue) }
     }
 
     func addDocument(name: String, data: Data, contentType: String, title: String = "") {
-        let document = ApplianceDocument(name: name, data: data, contentType: contentType, title: title)
-        if documents == nil {
-            documents = []
-        }
-        documents?.append(document)
+        var docs = documents
+        docs.append(ApplianceDocument(name: name, data: data, contentType: contentType, title: title))
+        documents = docs
     }
 
     func removeDocument(_ document: ApplianceDocument) {
-        documents?.removeAll { $0.id == document.id }
+        documents = documents.filter { $0.id != document.id }
     }
 
-    func addPhoto(data: Data) {
-        let photo = AppliancePhoto(imageData: data)
-        if photos == nil {
-            photos = []
-        }
-        photos?.append(photo)
+    // MARK: - Photos
+
+    var photoArray: [AppliancePhoto] {
+        (photos as? Set<AppliancePhoto>)?.sorted { $0.createdAt < $1.createdAt } ?? []
     }
 
-    /// The image data for the appliance's primary picture (the earliest one
-    /// added), used in place of the type icon wherever the appliance is listed.
+    func addPhoto(data: Data, in context: NSManagedObjectContext) {
+        let photo = AppliancePhoto(context: context)
+        photo.id = UUID()
+        photo.imageData = data
+        photo.createdAt = Date()
+        photo.appliance = self
+    }
+
     var primaryPhotoData: Data? {
-        photos?.sorted(by: { $0.createdAt < $1.createdAt }).first?.imageData
+        photoArray.first?.imageData
+    }
+
+    // MARK: - Convenience factory
+
+    @discardableResult
+    static func make(
+        name: String,
+        type: ApplianceType,
+        manufacturer: String = "",
+        modelNumber: String = "",
+        in context: NSManagedObjectContext
+    ) -> Appliance {
+        let appliance = Appliance(context: context)
+        appliance.id = UUID()
+        appliance.name = name
+        appliance.typeRaw = type.rawValue
+        appliance.manufacturer = manufacturer
+        appliance.modelNumber = modelNumber
+        appliance.notes = ""
+        appliance.room = ""
+        appliance.createdAt = Date()
+        return appliance
     }
 }
 
-/// A picture attached to an appliance. Stored as its own model so images use
-/// SwiftData's external storage and can grow independently of the appliance row.
-@Model
-final class AppliancePhoto {
-    var id: UUID = UUID()
-    @Attribute(.externalStorage) var imageData: Data?
-    var createdAt: Date = Date()
-    var appliance: Appliance?
+// MARK: - AppliancePhoto
 
-    init(imageData: Data? = nil) {
-        self.id = UUID()
-        self.imageData = imageData
-        self.createdAt = Date()
-    }
+@objc(AppliancePhoto)
+public final class AppliancePhoto: NSManagedObject, Identifiable {
+    @NSManaged public var id: UUID
+    @NSManaged public var imageData: Data?
+    @NSManaged public var createdAt: Date
+    @NSManaged public var appliance: Appliance?
 }
+
+// MARK: - ApplianceDocument (Codable value type)
 
 struct ApplianceDocument: Codable, Identifiable {
     let id: UUID
-    let name: String        // actual file name
-    var title: String       // user-provided display title (empty = use name)
+    let name: String
+    var title: String
     let data: Data
     let contentType: String
     let dateAdded: Date
@@ -104,7 +123,6 @@ struct ApplianceDocument: Codable, Identifiable {
         self.dateAdded = Date()
     }
 
-    // Backward-compat: old records lack `title`
     enum CodingKeys: String, CodingKey {
         case id, name, title, data, contentType, dateAdded
     }
@@ -122,30 +140,23 @@ struct ApplianceDocument: Codable, Identifiable {
     var displayName: String { title.isEmpty ? name : title }
 
     var fileExtension: String {
-        if contentType.contains("pdf") {
-            return "pdf"
-        } else if contentType.contains("word") {
-            return "doc"
-        } else if contentType.contains("text") {
-            return "txt"
-        } else {
-            return "file"
-        }
+        if contentType.contains("pdf") { return "pdf" }
+        if contentType.contains("word") || contentType.contains("doc") { return "doc" }
+        if contentType.contains("text") { return "txt" }
+        return "file"
     }
 
     var systemImage: String {
         switch fileExtension {
-        case "pdf":
-            return "doc.fill"
-        case "doc":
-            return "doc.text.fill"
-        case "txt":
-            return "doc.plaintext.fill"
-        default:
-            return "doc.fill"
+        case "pdf": return "doc.fill"
+        case "doc": return "doc.text.fill"
+        case "txt": return "doc.plaintext.fill"
+        default: return "doc.fill"
         }
     }
 }
+
+// MARK: - ApplianceType
 
 enum ApplianceType: String, Codable, CaseIterable {
     case refrigerator = "Refrigerator"

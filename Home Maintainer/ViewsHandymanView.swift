@@ -6,7 +6,7 @@
 //
 
 import SwiftUI
-import SwiftData
+import CoreData
 
 struct ConversationDestination: Identifiable, Hashable {
     let id = UUID()
@@ -29,7 +29,7 @@ struct ChatSearchResult: Identifiable {
 struct HandymanView: View {
     @Environment(GeminiService.self) private var aiService
     @Environment(HomeManager.self) private var homeManager
-    @Environment(\.modelContext) private var modelContext
+    @Environment(\.managedObjectContext) private var viewContext
 
     @State private var showingHomePicker = false
     @State private var navigationTarget: ConversationDestination?
@@ -61,18 +61,17 @@ struct HandymanView: View {
     }
 
     private func createNewConversation() {
-        let conversation = ChatConversation()
-        conversation.homeID = homeManager.currentHome?.id
-        modelContext.insert(conversation)
+        let conversation = ChatConversation.make(homeID: homeManager.currentHome?.id, in: viewContext)
+        try? viewContext.save()
         navigationTarget = ConversationDestination(conversation: conversation, scrollToMessageID: nil)
     }
 }
 
 struct ConversationListView: View {
-    @Environment(\.modelContext) private var modelContext
+    @Environment(\.managedObjectContext) private var viewContext
     @Environment(AuthService.self) private var authService
-    @Query(sort: \ChatConversation.lastMessageAt, order: .reverse) private var allConversations: [ChatConversation]
-    @Query(sort: \ChatMessageData.timestamp, order: .reverse) private var allMessages: [ChatMessageData]
+    @FetchRequest(sortDescriptors: [SortDescriptor(\.lastMessageAt, order: .reverse)]) private var allConversations: FetchedResults<ChatConversation>
+    @FetchRequest(sortDescriptors: [SortDescriptor(\.timestamp, order: .reverse)]) private var allMessages: FetchedResults<ChatMessageData>
 
     let homeID: UUID?
     @Binding var navigationTarget: ConversationDestination?
@@ -218,8 +217,9 @@ struct ConversationListView: View {
 
     private func deleteConversations(offsets: IndexSet) {
         for index in offsets {
-            modelContext.delete(conversations[index])
+            viewContext.delete(conversations[index])
         }
+        try? viewContext.save()
     }
 }
 
@@ -236,30 +236,33 @@ struct SetupView: View {
 struct ChatView: View {
     @Environment(GeminiService.self) private var aiService
     @Environment(AuthService.self) private var authService
-    @Environment(\.modelContext) private var modelContext
+    @Environment(\.managedObjectContext) private var viewContext
     @Environment(HomeManager.self) private var homeManager
     @Environment(LocationManager.self) private var locationManager
     @Environment(LocalBusinessSearchService.self) private var searchService
     @Environment(CloudSharingService.self) private var cloudSharingService
-    @Query private var tasks: [MaintenanceTask]
-    @Query private var appliances: [Appliance]
-    @Query private var providers: [ServiceProvider]
-    @Query private var allHomeDocuments: [HomeDocument]
-    @Query private var allProjects: [RepairProject]
+    @FetchRequest(sortDescriptors: []) private var tasks: FetchedResults<MaintenanceTask>
+    @FetchRequest(sortDescriptors: []) private var appliances: FetchedResults<Appliance>
+    @FetchRequest(sortDescriptors: []) private var providers: FetchedResults<ServiceProvider>
+    @FetchRequest(sortDescriptors: []) private var allHomeDocuments: FetchedResults<HomeDocument>
+    @FetchRequest(sortDescriptors: []) private var allProjects: FetchedResults<RepairProject>
 
     let home: Home?  // locked at navigation time — used for in-memory scoping
-    @Bindable var conversation: ChatConversation
+    var conversation: ChatConversation
     var scrollToMessageID: UUID? = nil
 
     init(conversation: ChatConversation, scrollToMessageID: UUID? = nil, home: Home?) {
         self.home = home
         self.conversation = conversation
         self.scrollToMessageID = scrollToMessageID
-        // @Query is unfiltered; in-memory filtering in buildContext() uses self.home.
-        // SwiftData #Predicate with optional relationship chaining (home?.id) is unreliable,
+        // @FetchRequest is unfiltered; in-memory filtering in buildContext() uses self.home.
+        // CoreData predicates with optional relationship chaining can be unreliable,
         // so we keep all records and filter explicitly rather than risk silent predicate failures.
-        _tasks = Query(); _appliances = Query(); _providers = Query()
-        _allHomeDocuments = Query(); _allProjects = Query()
+        _tasks = FetchRequest(sortDescriptors: [])
+        _appliances = FetchRequest(sortDescriptors: [])
+        _providers = FetchRequest(sortDescriptors: [])
+        _allHomeDocuments = FetchRequest(sortDescriptors: [])
+        _allProjects = FetchRequest(sortDescriptors: [])
     }
 
     @State private var messages: [ChatMessage] = []
@@ -271,7 +274,7 @@ struct ChatView: View {
     @State private var showingCamera = false
     @State private var selectedImages: [UIImage] = []
     @State private var lastSearchPlaces: [GooglePlaceResult] = []
-    
+
     var body: some View {
         VStack(spacing: 0) {
             // Messages List
@@ -282,7 +285,7 @@ struct ChatView: View {
                             MessageBubble(message: message)
                                 .id(message.id)
                         }
-                        
+
                         if isLoading {
                             HStack {
                                 ProgressView()
@@ -314,7 +317,7 @@ struct ChatView: View {
                     }
                 }
             }
-            
+
             // Error Message
             if let error = errorMessage {
                 Text(error)
@@ -323,7 +326,7 @@ struct ChatView: View {
                     .padding(.horizontal)
                     .padding(.top, 4)
             }
-            
+
             // Selected Images Preview
             if !selectedImages.isEmpty {
                 ScrollView(.horizontal, showsIndicators: false) {
@@ -335,7 +338,7 @@ struct ChatView: View {
                                     .scaledToFill()
                                     .frame(width: 80, height: 80)
                                     .clipShape(RoundedRectangle(cornerRadius: 8))
-                                
+
                                 Button {
                                     selectedImages.remove(at: index)
                                 } label: {
@@ -350,7 +353,7 @@ struct ChatView: View {
                 }
                 .frame(height: 90)
             }
-            
+
             // Input Bar
             VStack(spacing: 0) {
                 Divider()
@@ -419,9 +422,9 @@ struct ChatView: View {
             loadMessages()
         }
     }
-    
+
     private func loadMessages() {
-        let sorted = (conversation.messages ?? []).sorted { $0.timestamp < $1.timestamp }
+        let sorted = conversation.messageArray
         messages = sorted.map { savedMessage in
             let msg = ChatMessage(
                 role: savedMessage.messageRole == .user ? .user : .assistant,
@@ -433,7 +436,7 @@ struct ChatView: View {
             }
             return msg
         }
-        
+
         // Add welcome message if empty
         if messages.isEmpty {
             messages.append(ChatMessage(
@@ -442,7 +445,7 @@ struct ChatView: View {
             ))
         }
     }
-    
+
     private func sendMessage() {
         let userMessage = inputText
         let images = selectedImages
@@ -455,33 +458,35 @@ struct ChatView: View {
 
         inputText = ""
         selectedImages = []
-        
+
         // Convert images to Data for saving
         let imageData = images.compactMap { $0.jpegData(compressionQuality: 0.8) }
-        
+
         // Save user message to conversation
-        conversation.addMessage(role: .user, content: userMessage, imageData: imageData)
-        
+        conversation.addMessage(role: .user, content: userMessage, imageData: imageData, in: viewContext)
+        try? viewContext.save()
+
         // Add user message to UI
         messages.append(ChatMessage(role: .user, content: userMessage, images: images))
         isLoading = true
-        
+
         Task {
             do {
                 // Build context about user's home
                 let context = buildContext()
-                
+
                 // Get AI response with tool calling capability
                 let response = try await aiService.sendMessage(userMessage.isEmpty ? "What do you see in this image?" : userMessage, images: imageData, context: context) { toolCall in
                     await handleToolCall(toolCall)
                 }
-                
+
                 // Save full response to store immediately
                 await MainActor.run {
-                    conversation.addMessage(role: .assistant, content: response)
+                    conversation.addMessage(role: .assistant, content: response, in: viewContext)
+                    try? viewContext.save()
                     isLoading = false
                 }
-                
+
                 // Animate response word-by-word
                 let streamId = UUID()
                 await MainActor.run {
@@ -508,18 +513,18 @@ struct ChatView: View {
             }
         }
     }
-    
+
     private func handleToolCall(_ toolCall: ToolCall) async -> String {
         let functionName = toolCall.function.name
         let arguments = toolCall.function.arguments
-        
+
         switch functionName {
         case "create_maintenance_task":
             return await createMaintenanceTask(from: arguments)
-            
+
         case "create_appliance":
             return await createAppliance(from: arguments)
-            
+
         case "search_local_providers":
             return await searchLocalProviders(from: arguments)
 
@@ -542,13 +547,13 @@ struct ChatView: View {
             return "Unknown function: \(functionName)"
         }
     }
-    
+
     private func createMaintenanceTask(from jsonString: String) async -> String {
         guard let data = jsonString.data(using: .utf8),
               let params = try? JSONDecoder().decode(TaskParams.self, from: data) else {
             return "Failed to parse task parameters"
         }
-        
+
         await MainActor.run {
             let frequency: TaskFrequency
             switch params.frequency {
@@ -561,29 +566,30 @@ struct ChatView: View {
             case "annually": frequency = .annually
             default: frequency = .monthly
             }
-            
-            let task = MaintenanceTask(
+
+            let task = MaintenanceTask.make(
                 name: params.name,
                 description: params.description,
-                frequency: frequency
+                frequency: frequency,
+                in: viewContext
             )
             let currentHome = homeManager.currentHome
             task.homeIDString = currentHome?.id.uuidString
             if let currentHome, !cloudSharingService.isInSharedStore(entityName: "Home", id: currentHome.id) {
                 task.home = currentHome
             }
-            modelContext.insert(task)
+            try? viewContext.save()
         }
-        
+
         return "✅ Created task: \(params.name) (scheduled \(params.frequency))"
     }
-    
+
     private func createAppliance(from jsonString: String) async -> String {
         guard let data = jsonString.data(using: .utf8),
               let params = try? JSONDecoder().decode(ApplianceParams.self, from: data) else {
             return "Failed to parse appliance parameters"
         }
-        
+
         await MainActor.run {
             let applianceType: ApplianceType
             switch params.type {
@@ -598,23 +604,24 @@ struct ChatView: View {
             case "garbageDisposal": applianceType = .garbageDisposal
             default: applianceType = .other
             }
-            
-            let appliance = Appliance(
+
+            let appliance = Appliance.make(
                 name: params.name,
                 type: applianceType,
-                manufacturer: params.manufacturer ?? ""
+                manufacturer: params.manufacturer ?? "",
+                in: viewContext
             )
             let currentHome = homeManager.currentHome
             appliance.homeIDString = currentHome?.id.uuidString
             if let currentHome, !cloudSharingService.isInSharedStore(entityName: "Home", id: currentHome.id) {
                 appliance.home = currentHome
             }
-            modelContext.insert(appliance)
+            try? viewContext.save()
         }
-        
+
         return "✅ Added appliance: \(params.name)"
     }
-    
+
     private func searchLocalProviders(from jsonString: String) async -> String {
         guard let data = jsonString.data(using: .utf8),
               let params = try? JSONDecoder().decode(SearchProviderParams.self, from: data) else {
@@ -684,14 +691,14 @@ struct ChatView: View {
             var info = "• \(p.name) (\(p.category.rawValue))"
             if !p.phoneNumber.isEmpty { info += " — \(p.phoneNumber)" }
             if !p.address.isEmpty { info += "\n  \(p.address)" }
-            if let rating = p.googleRating { info += " — ⭐ \(String(format: "%.1f", rating))" }
+            info += " — ⭐ \(String(format: "%.1f", p.googleRating))"
             if let price = p.displayPriceLevel { info += " (\(price))" }
             return info
         }
 
         return "Found \(matched.count) saved provider\(matched.count == 1 ? "" : "s") matching '\(params.query)':\n" + lines.joined(separator: "\n")
     }
-    
+
     private func saveSearchResult(from jsonString: String) async -> String {
         guard let data = jsonString.data(using: .utf8),
               let params = try? JSONDecoder().decode(SaveSearchResultParams.self, from: data) else {
@@ -705,16 +712,17 @@ struct ChatView: View {
 
         let place = lastSearchPlaces[index]
         await MainActor.run {
-            let provider = ServiceProvider(
+            let provider = ServiceProvider.make(
                 name: place.name,
                 category: place.category,
                 phoneNumber: place.phoneNumber ?? "",
-                email: ""
+                email: "",
+                in: viewContext
             )
             provider.address = place.address
             provider.website = place.website ?? ""
             provider.googlePlaceID = place.id
-            provider.googleRating = place.rating
+            if let rating = place.rating { provider.googleRating = rating }
             provider.googlePriceLevel = place.priceLevel
             provider.weekdayHours = place.weekdayDescriptions
             provider.businessTypes = place.types.isEmpty ? nil : place.types
@@ -723,7 +731,7 @@ struct ChatView: View {
             if let currentHome, !cloudSharingService.isInSharedStore(entityName: "Home", id: currentHome.id) {
                 provider.home = currentHome
             }
-            modelContext.insert(provider)
+            try? viewContext.save()
         }
 
         return "✅ Added \(place.name) to your providers"
@@ -734,7 +742,7 @@ struct ChatView: View {
               let params = try? JSONDecoder().decode(ServiceProviderParams.self, from: data) else {
             return "Failed to parse provider parameters"
         }
-        
+
         await MainActor.run {
             let category: ServiceCategory
             switch params.category {
@@ -750,14 +758,15 @@ struct ChatView: View {
             case "appliance": category = .appliance
             default: category = .other
             }
-            
-            let provider = ServiceProvider(
+
+            let provider = ServiceProvider.make(
                 name: params.name,
                 category: category,
                 phoneNumber: params.phoneNumber ?? "",
-                email: ""
+                email: "",
+                in: viewContext
             )
-            
+
             if let address = params.address { provider.address = address }
             if let website = params.website { provider.website = website }
             if let rating = params.rating { provider.googleRating = rating }
@@ -767,9 +776,9 @@ struct ChatView: View {
             if let currentHome, !cloudSharingService.isInSharedStore(entityName: "Home", id: currentHome.id) {
                 provider.home = currentHome
             }
-            modelContext.insert(provider)
+            try? viewContext.save()
         }
-        
+
         return "✅ Added \(params.name) to your providers"
     }
 
@@ -802,18 +811,19 @@ struct ChatView: View {
             default: priority = .medium
             }
 
-            let project = RepairProject(
+            let project = RepairProject.make(
                 title: params.title,
                 description: params.description,
                 category: category,
-                priority: priority
+                priority: priority,
+                in: viewContext
             )
             let currentHome = homeManager.currentHome
             project.homeIDString = currentHome?.id.uuidString
             if let currentHome, !cloudSharingService.isInSharedStore(entityName: "Home", id: currentHome.id) {
                 project.home = currentHome
             }
-            modelContext.insert(project)
+            try? viewContext.save()
         }
 
         return "✅ Created project: \(params.title)"
@@ -833,7 +843,7 @@ struct ChatView: View {
                 return "Could not find project '\(params.projectTitle)' for this home"
             }
 
-            let task = MaintenanceTask(name: params.name, description: params.description, frequency: .once)
+            let task = MaintenanceTask.make(name: params.name, description: params.description, frequency: .once, in: viewContext)
             let currentHome = homeManager.currentHome
             task.homeIDString = currentHome?.id.uuidString
             if let currentHome, !cloudSharingService.isInSharedStore(entityName: "Home", id: currentHome.id) {
@@ -843,7 +853,7 @@ struct ChatView: View {
             if !cloudSharingService.isInSharedStore(entityName: "RepairProject", id: project.id) {
                 task.sourceProject = project
             }
-            modelContext.insert(task)
+            try? viewContext.save()
             return "✅ Added sub-task '\(params.name)' to project '\(project.title)'"
         }
         return result
@@ -860,9 +870,9 @@ struct ChatView: View {
             parts.append(homeLabel)
         }
 
-        // Filter all @Query results to the active home in-memory using the scalar
+        // Filter all @FetchRequest results to the active home in-memory using the scalar
         // homeIDString mirror — accessing the home relationship directly on
-        // shared-store objects triggers ModelContext.fulfill which crashes.
+        // shared-store objects triggers NSManagedObjectContext.fulfill which crashes.
         let homeIDStr = home?.id.uuidString
         let homeTasks      = tasks.filter { !$0.isDeleted && $0.homeIDString == homeIDStr }
         let homeAppliances = appliances.filter { !$0.isDeleted && $0.homeIDString == homeIDStr }
@@ -892,13 +902,14 @@ struct ChatView: View {
                 if !project.projectDescription.isEmpty {
                     info += " — \(project.projectDescription)"
                 }
-                if let cost = project.totalCost {
+                let cost = project.totalCost
+                if cost > 0 {
                     info += " — Total cost: \(cost.formatted(.currency(code: "USD")))"
                 }
                 // Skip sub-task details for shared-store projects to avoid
-                // ModelContext.fulfill crash on the subTasks relationship.
+                // NSManagedObjectContext.fulfill crash on the subTasks relationship.
                 if !cloudSharingService.isInSharedStore(entityName: "RepairProject", id: project.id) {
-                    let subTasks = project.subTasks ?? []
+                    let subTasks = project.subTaskArray
                     if !subTasks.isEmpty {
                         let subTaskList = subTasks.map { task -> String in
                             let done = task.lastCompleted != nil ? " (done)" : ""
@@ -907,7 +918,7 @@ struct ChatView: View {
                         info += " | Sub-tasks: \(subTaskList)"
                     }
                 }
-                let workDates = project.workDates ?? []
+                let workDates = project.workDates
                 if !workDates.isEmpty {
                     let dateList = workDates.prefix(3).map { wd -> String in
                         let label = wd.label.isEmpty ? "Work date" : wd.label
@@ -926,7 +937,7 @@ struct ChatView: View {
         let charLimit = 8000
 
         for appliance in homeAppliances {
-            for doc in appliance.documents ?? [] {
+            for doc in appliance.documents {
                 guard charsUsed < charLimit else { break }
                 let label = "\(doc.displayName) (\(appliance.name))"
                 if let text = extractDocumentText(data: doc.data, contentType: doc.contentType) {
@@ -949,7 +960,7 @@ struct ChatView: View {
         }
 
         for project in homeProjects {
-            for doc in project.projectDocuments ?? [] {
+            for doc in project.projectDocuments {
                 guard charsUsed < charLimit else { break }
                 let label = "\(doc.displayName) (\(project.title))"
                 if let text = extractDocumentText(data: doc.data, contentType: doc.contentType) {
@@ -970,13 +981,13 @@ struct ChatView: View {
 
 struct MessageBubble: View {
     let message: ChatMessage
-    
+
     var body: some View {
         HStack {
             if message.role == .user {
                 Spacer()
             }
-            
+
             VStack(alignment: message.role == .user ? .trailing : .leading, spacing: 4) {
                 // Show images if present
                 if !message.images.isEmpty {
@@ -988,7 +999,7 @@ struct MessageBubble: View {
                             .clipShape(RoundedRectangle(cornerRadius: 12))
                     }
                 }
-                
+
                 // Show text if present
                 if !message.content.isEmpty {
                     if message.role == .assistant {
@@ -1011,13 +1022,13 @@ struct MessageBubble: View {
                             .cornerRadius(16)
                     }
                 }
-                
+
                 Text(message.timestamp, format: .dateTime.hour().minute())
                     .font(.caption2)
                     .foregroundStyle(.secondary)
             }
             .frame(maxWidth: 280, alignment: message.role == .user ? .trailing : .leading)
-            
+
             if message.role == .assistant {
                 Spacer()
             }
@@ -1033,7 +1044,7 @@ struct ChatMessage: Identifiable {
     var content: String
     let images: [UIImage]
     let timestamp: Date
-    
+
     init(role: Role, content: String, images: [UIImage] = [], id: UUID = UUID()) {
         self.id = id
         self.role = role
@@ -1041,7 +1052,7 @@ struct ChatMessage: Identifiable {
         self.images = images
         self.timestamp = Date()
     }
-    
+
     enum Role {
         case user
         case assistant
@@ -1101,33 +1112,33 @@ import PhotosUI
 struct ImagePicker: UIViewControllerRepresentable {
     @Binding var selectedImages: [UIImage]
     @Environment(\.dismiss) private var dismiss
-    
+
     func makeUIViewController(context: Context) -> PHPickerViewController {
         var config = PHPickerConfiguration()
         config.filter = .images
         config.selectionLimit = 5
-        
+
         let picker = PHPickerViewController(configuration: config)
         picker.delegate = context.coordinator
         return picker
     }
-    
+
     func updateUIViewController(_ uiViewController: PHPickerViewController, context: Context) {}
-    
+
     func makeCoordinator() -> Coordinator {
         Coordinator(self)
     }
-    
+
     class Coordinator: NSObject, PHPickerViewControllerDelegate {
         let parent: ImagePicker
-        
+
         init(_ parent: ImagePicker) {
             self.parent = parent
         }
-        
+
         func picker(_ picker: PHPickerViewController, didFinishPicking results: [PHPickerResult]) {
             parent.dismiss()
-            
+
             for result in results {
                 result.itemProvider.loadObject(ofClass: UIImage.self) { image, error in
                     if let image = image as? UIImage {
@@ -1144,43 +1155,52 @@ struct ImagePicker: UIViewControllerRepresentable {
 struct CameraPicker: UIViewControllerRepresentable {
     @Binding var selectedImage: UIImage?
     @Environment(\.dismiss) private var dismiss
-    
+
     func makeUIViewController(context: Context) -> UIImagePickerController {
         let picker = UIImagePickerController()
         picker.sourceType = .camera
         picker.delegate = context.coordinator
         return picker
     }
-    
+
     func updateUIViewController(_ uiViewController: UIImagePickerController, context: Context) {}
-    
+
     func makeCoordinator() -> Coordinator {
         Coordinator(self)
     }
-    
+
     class Coordinator: NSObject, UIImagePickerControllerDelegate, UINavigationControllerDelegate {
         let parent: CameraPicker
-        
+
         init(_ parent: CameraPicker) {
             self.parent = parent
         }
-        
+
         func imagePickerController(_ picker: UIImagePickerController, didFinishPickingMediaWithInfo info: [UIImagePickerController.InfoKey : Any]) {
             if let image = info[.originalImage] as? UIImage {
                 parent.selectedImage = image
             }
             parent.dismiss()
         }
-        
+
         func imagePickerControllerDidCancel(_ picker: UIImagePickerController) {
             parent.dismiss()
         }
     }
 }
 
+private func makePreviewContext() -> NSManagedObjectContext {
+    let model = AppDataModel.buildModel()
+    let container = NSPersistentContainer(name: "Preview", managedObjectModel: model)
+    let desc = NSPersistentStoreDescription()
+    desc.type = NSInMemoryStoreType
+    container.persistentStoreDescriptions = [desc]
+    container.loadPersistentStores { _, _ in }
+    return container.viewContext
+}
+
 #Preview {
     HandymanView()
         .environment(GeminiService())
-        .modelContainer(for: [MaintenanceTask.self, Appliance.self], inMemory: true)
+        .environment(\.managedObjectContext, makePreviewContext())
 }
-

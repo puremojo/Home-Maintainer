@@ -6,18 +6,18 @@
 //
 
 import SwiftUI
-import SwiftData
+import CoreData
 import UniformTypeIdentifiers
 import PDFKit
 import PhotosUI
 import VisionKit
 
 struct ApplianceDetailView: View {
-    @Environment(\.modelContext) private var modelContext
+    @Environment(\.managedObjectContext) private var viewContext
     @Environment(GeminiService.self) private var geminiService
     @Environment(HomeManager.self) private var homeManager
-    @Query private var allTasks: [MaintenanceTask]
-    @Bindable var appliance: Appliance
+    @FetchRequest(sortDescriptors: [SortDescriptor(\.name)]) private var allTasks: FetchedResults<MaintenanceTask>
+    var appliance: Appliance
     @State private var isEditing = false
     @State private var showingAddDocument = false
     @State private var selectedDocument: ApplianceDocument?
@@ -29,18 +29,18 @@ struct ApplianceDetailView: View {
     @State private var showTaskSuggestions = false
     @State private var suggestionError: String?
     @State private var showSuggestionError = false
-    
+
     // Get tasks linked to this appliance
     var linkedTasks: [MaintenanceTask] {
         allTasks.filter { $0.appliance?.id == appliance.id }
     }
-    
+
     var body: some View {
         List {
             Section("Information") {
                 LabeledContent("Name", value: appliance.name)
                 LabeledContent("Type", value: appliance.type.rawValue)
-                
+
                 if !appliance.room.isEmpty {
                     LabeledContent("Room", value: appliance.room)
                 }
@@ -48,17 +48,17 @@ struct ApplianceDetailView: View {
                 if !appliance.manufacturer.isEmpty {
                     LabeledContent("Manufacturer", value: appliance.manufacturer)
                 }
-                
+
                 if !appliance.modelNumber.isEmpty {
                     LabeledContent("Model Number", value: appliance.modelNumber)
                 }
-                
+
                 if let purchaseDate = appliance.purchaseDate {
                     LabeledContent("Purchase Date") {
                         Text(purchaseDate, format: .dateTime.month().day().year())
                     }
                 }
-                
+
                 if let warrantyExpiration = appliance.warrantyExpiration {
                     LabeledContent("Warranty Expires") {
                         Text(warrantyExpiration, format: .dateTime.month().day().year())
@@ -66,18 +66,19 @@ struct ApplianceDetailView: View {
                     }
                 }
             }
-            
+
             if !appliance.notes.isEmpty {
                 Section("Notes") {
                     LinkedText(text: appliance.notes)
                 }
             }
-            
+
             Section {
-                if let photos = appliance.photos, !photos.isEmpty {
+                let photos = appliance.photoArray
+                if !photos.isEmpty {
                     ScrollView(.horizontal, showsIndicators: false) {
                         HStack(spacing: 12) {
-                            ForEach(photos.sorted(by: { $0.createdAt < $1.createdAt })) { photo in
+                            ForEach(photos) { photo in
                                 if let data = photo.imageData, let uiImage = UIImage(data: data) {
                                     Image(uiImage: uiImage)
                                         .resizable()
@@ -112,7 +113,7 @@ struct ApplianceDetailView: View {
             }
 
             Section {
-                ForEach(appliance.documents ?? []) { document in
+                ForEach(appliance.documents) { document in
                     Button {
                         selectedDocument = document
                     } label: {
@@ -124,32 +125,32 @@ struct ApplianceDetailView: View {
                                 Text(document.displayName)
                                     .font(.subheadline)
                                     .foregroundStyle(.primary)
-                                
+
                                 HStack {
                                     Text(document.fileExtension.uppercased())
                                         .font(.caption2)
                                         .foregroundStyle(.secondary)
-                                    
+
                                     Text("•")
                                         .font(.caption2)
                                         .foregroundStyle(.secondary)
-                                    
+
                                     Text(document.dateAdded, format: .dateTime.month().day().year())
                                         .font(.caption2)
                                         .foregroundStyle(.secondary)
-                                    
+
                                     Text("•")
                                         .font(.caption2)
                                         .foregroundStyle(.secondary)
-                                    
+
                                     Text(ByteCountFormatter.string(fromByteCount: Int64(document.data.count), countStyle: .file))
                                         .font(.caption2)
                                         .foregroundStyle(.secondary)
                                 }
                             }
-                            
+
                             Spacer()
-                            
+
                             Image(systemName: "chevron.right")
                                 .font(.caption)
                                 .foregroundStyle(.secondary)
@@ -159,7 +160,8 @@ struct ApplianceDetailView: View {
                 .onDelete(perform: deleteDocuments)
 
                 // HomeDocuments linked from the Documents tab
-                ForEach((appliance.homeDocuments ?? []).sorted { $0.createdAt < $1.createdAt }) { doc in
+                let homeDocsArray = (appliance.homeDocuments as? Set<HomeDocument>)?.sorted { $0.createdAt < $1.createdAt } ?? []
+                ForEach(homeDocsArray) { doc in
                     Button {
                         selectedHomeDocument = doc
                     } label: {
@@ -182,7 +184,7 @@ struct ApplianceDetailView: View {
             } footer: {
                 Text("Attach user manuals, warranty documents, or other files related to this appliance.")
             }
-            
+
             Section("Maintenance Tasks") {
                 ForEach(linkedTasks) { task in
                     NavigationLink(destination: MaintenanceTaskDetailView(task: task)) {
@@ -273,7 +275,7 @@ struct ApplianceDetailView: View {
             Task {
                 for item in items {
                     if let data = try? await item.loadTransferable(type: Data.self) {
-                        appliance.addPhoto(data: data)
+                        appliance.addPhoto(data: data, in: viewContext)
                     }
                 }
                 photoPickerItems = []
@@ -294,17 +296,17 @@ struct ApplianceDetailView: View {
     }
 
     private func deletePhoto(_ photo: AppliancePhoto) {
-        appliance.photos?.removeAll { $0.id == photo.id }
-        modelContext.delete(photo)
+        viewContext.delete(photo)
+        try? viewContext.save()
     }
-    
+
     private func deleteDocuments(offsets: IndexSet) {
-        guard let documents = appliance.documents else { return }
+        let documents = appliance.documents
         for index in offsets {
             appliance.removeDocument(documents[index])
         }
     }
-    
+
     private func fetchSuggestions() {
         isFetchingSuggestions = true
         Task {
@@ -328,76 +330,93 @@ struct ApplianceDetailView: View {
     private func addSuggestedTasks(_ tasks: [TaskSuggestion]) {
         for suggestion in tasks {
             let freq = TaskFrequency(fromString: suggestion.frequency) ?? .annually
-            let task = MaintenanceTask(
+            let task = MaintenanceTask.make(
                 name: suggestion.name,
                 description: suggestion.description,
                 frequency: freq,
+                room: appliance.room,
                 appliance: appliance,
-                room: appliance.room
+                in: viewContext
             )
             task.home = homeManager.currentHome
             task.homeIDString = homeManager.currentHome?.id.uuidString
-            modelContext.insert(task)
 
             for product in suggestion.products {
                 let encoded = product.searchQuery
                     .addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? product.searchQuery
-                let link = ProductLink(
+                let link = ProductLink.make(
                     name: product.name,
-                    urlString: "https://www.amazon.com/s?k=\(encoded)"
+                    urlString: "https://www.amazon.com/s?k=\(encoded)",
+                    in: viewContext
                 )
                 link.task = task
-                modelContext.insert(link)
             }
         }
+        try? viewContext.save()
     }
 }
 
 struct EditApplianceView: View {
     @Environment(\.dismiss) private var dismiss
-    @Bindable var appliance: Appliance
-    
+    @Environment(\.managedObjectContext) private var viewContext
+    var appliance: Appliance
+
+    @State private var name: String
+    @State private var type: ApplianceType
+    @State private var manufacturer: String
+    @State private var modelNumber: String
+    @State private var room: String
+    @State private var purchaseDate: Date
+    @State private var warrantyExpiration: Date
+    @State private var notes: String
+
+    init(appliance: Appliance) {
+        self.appliance = appliance
+        _name = State(initialValue: appliance.name)
+        _type = State(initialValue: appliance.type)
+        _manufacturer = State(initialValue: appliance.manufacturer)
+        _modelNumber = State(initialValue: appliance.modelNumber)
+        _room = State(initialValue: appliance.room)
+        _purchaseDate = State(initialValue: appliance.purchaseDate ?? Date())
+        _warrantyExpiration = State(initialValue: appliance.warrantyExpiration ?? Date())
+        _notes = State(initialValue: appliance.notes)
+    }
+
     var body: some View {
         NavigationStack {
             Form {
                 Section("Basic Information") {
-                    TextField("Name", text: $appliance.name)
-                    Picker("Type", selection: $appliance.type) {
+                    TextField("Name", text: $name)
+                    Picker("Type", selection: $type) {
                         ForEach(ApplianceType.allCases, id: \.self) { type in
                             Label(type.rawValue, systemImage: type.systemImage)
                                 .tag(type)
                         }
                     }
                 }
-                
+
                 Section("Details") {
-                    TextField("Manufacturer", text: $appliance.manufacturer)
-                    TextField("Model Number", text: $appliance.modelNumber)
-                    TextField("Room", text: $appliance.room)
+                    TextField("Manufacturer", text: $manufacturer)
+                    TextField("Model Number", text: $modelNumber)
+                    TextField("Room", text: $room)
                 }
-                
+
                 Section("Dates") {
                     DatePicker(
                         "Purchase Date",
-                        selection: Binding(
-                            get: { appliance.purchaseDate ?? Date() },
-                            set: { appliance.purchaseDate = $0 }
-                        ),
+                        selection: $purchaseDate,
                         displayedComponents: .date
                     )
-                    
+
                     DatePicker(
                         "Warranty Expires",
-                        selection: Binding(
-                            get: { appliance.warrantyExpiration ?? Date() },
-                            set: { appliance.warrantyExpiration = $0 }
-                        ),
+                        selection: $warrantyExpiration,
                         displayedComponents: .date
                     )
                 }
-                
+
                 Section("Notes") {
-                    TextField("Notes", text: $appliance.notes, axis: .vertical)
+                    TextField("Notes", text: $notes, axis: .vertical)
                         .lineLimit(3...6)
                 }
             }
@@ -406,6 +425,15 @@ struct EditApplianceView: View {
             .toolbar {
                 ToolbarItem(placement: .confirmationAction) {
                     Button("Done") {
+                        appliance.name = name
+                        appliance.type = type
+                        appliance.manufacturer = manufacturer
+                        appliance.modelNumber = modelNumber
+                        appliance.room = room
+                        appliance.purchaseDate = purchaseDate
+                        appliance.warrantyExpiration = warrantyExpiration
+                        appliance.notes = notes
+                        try? viewContext.save()
                         dismiss()
                     }
                 }
@@ -415,16 +443,28 @@ struct EditApplianceView: View {
 }
 
 #Preview {
-    let config = ModelConfiguration(isStoredInMemoryOnly: true)
-    let container = try! ModelContainer(for: Appliance.self, configurations: config)
-    
-    let appliance = Appliance(name: "Kitchen Fridge", type: .refrigerator, manufacturer: "Samsung", modelNumber: "RF28R7351SR")
-    container.mainContext.insert(appliance)
-    
+    let model = AppDataModel.buildModel()
+    let container = NSPersistentContainer(name: "Preview", managedObjectModel: model)
+    let desc = NSPersistentStoreDescription()
+    desc.type = NSInMemoryStoreType
+    container.persistentStoreDescriptions = [desc]
+    container.loadPersistentStores { _, _ in }
+    let ctx = container.viewContext
+
+    let appliance = Appliance(context: ctx)
+    appliance.id = UUID()
+    appliance.name = "Kitchen Fridge"
+    appliance.type = .refrigerator
+    appliance.manufacturer = "Samsung"
+    appliance.modelNumber = "RF28R7351SR"
+    appliance.room = ""
+    appliance.notes = ""
+    try? ctx.save()
+
     return NavigationStack {
         ApplianceDetailView(appliance: appliance)
     }
-    .modelContainer(container)
+    .environment(\.managedObjectContext, ctx)
 }
 
 // MARK: - Task Suggestions
@@ -532,7 +572,7 @@ struct SuggestedTasksView: View {
 struct DocumentPicker: UIViewControllerRepresentable {
     let onDocumentPicked: (URL, String) -> Void
     @Environment(\.dismiss) private var dismiss
-    
+
     func makeUIViewController(context: Context) -> UIDocumentPickerViewController {
         let picker = UIDocumentPickerViewController(forOpeningContentTypes: [
             .pdf,
@@ -545,32 +585,32 @@ struct DocumentPicker: UIViewControllerRepresentable {
         picker.delegate = context.coordinator
         return picker
     }
-    
+
     func updateUIViewController(_ uiViewController: UIDocumentPickerViewController, context: Context) {}
-    
+
     func makeCoordinator() -> Coordinator {
         Coordinator(self)
     }
-    
+
     class Coordinator: NSObject, UIDocumentPickerDelegate {
         let parent: DocumentPicker
-        
+
         init(_ parent: DocumentPicker) {
             self.parent = parent
         }
-        
+
         func documentPicker(_ controller: UIDocumentPickerViewController, didPickDocumentsAt urls: [URL]) {
             guard let url = urls.first else { return }
-            
+
             // Start accessing security-scoped resource
             guard url.startAccessingSecurityScopedResource() else { return }
             defer { url.stopAccessingSecurityScopedResource() }
-            
+
             let name = url.lastPathComponent
             parent.onDocumentPicked(url, name)
             parent.dismiss()
         }
-        
+
         func documentPickerWasCancelled(_ controller: UIDocumentPickerViewController) {
             parent.dismiss()
         }
@@ -581,7 +621,7 @@ struct DocumentViewer: View {
     let document: ApplianceDocument
     @Environment(\.dismiss) private var dismiss
     @State private var shareURL: URL?
-    
+
     var body: some View {
         NavigationStack {
             VStack {
@@ -595,7 +635,7 @@ struct DocumentViewer: View {
                                 .foregroundStyle(.blue)
                                 .frame(maxWidth: .infinity)
                                 .padding()
-                            
+
                             VStack(alignment: .leading, spacing: 8) {
                                 Text("Document Name")
                                     .font(.caption)
@@ -603,7 +643,7 @@ struct DocumentViewer: View {
                                 Text(document.name)
                                     .font(.headline)
                             }
-                            
+
                             VStack(alignment: .leading, spacing: 8) {
                                 Text("File Type")
                                     .font(.caption)
@@ -611,7 +651,7 @@ struct DocumentViewer: View {
                                 Text(document.fileExtension.uppercased())
                                     .font(.subheadline)
                             }
-                            
+
                             VStack(alignment: .leading, spacing: 8) {
                                 Text("Size")
                                     .font(.caption)
@@ -619,7 +659,7 @@ struct DocumentViewer: View {
                                 Text(ByteCountFormatter.string(fromByteCount: Int64(document.data.count), countStyle: .file))
                                     .font(.subheadline)
                             }
-                            
+
                             VStack(alignment: .leading, spacing: 8) {
                                 Text("Date Added")
                                     .font(.caption)
@@ -627,7 +667,7 @@ struct DocumentViewer: View {
                                 Text(document.dateAdded, format: .dateTime.month().day().year())
                                     .font(.subheadline)
                             }
-                            
+
                             // Preview text content if it's a text file
                             if document.fileExtension == "txt",
                                let content = String(data: document.data, encoding: .utf8) {
@@ -642,7 +682,7 @@ struct DocumentViewer: View {
                                         .cornerRadius(8)
                                 }
                             }
-                            
+
                             Spacer()
                         }
                         .padding()
@@ -657,7 +697,7 @@ struct DocumentViewer: View {
                         dismiss()
                     }
                 }
-                
+
                 ToolbarItem(placement: .primaryAction) {
                     Button {
                         shareDocument()
@@ -674,7 +714,7 @@ struct DocumentViewer: View {
             }
         }
     }
-    
+
     private func shareDocument() {
         // Create temporary file
         let tempURL = FileManager.default.temporaryDirectory.appendingPathComponent(document.name)
@@ -694,13 +734,13 @@ struct ShareItem: Identifiable {
 
 struct PDFViewWrapper: UIViewRepresentable {
     let data: Data
-    
+
     func makeUIView(context: Context) -> PDFView {
         let pdfView = PDFView()
         pdfView.autoScales = true
         return pdfView
     }
-    
+
     func updateUIView(_ pdfView: PDFView, context: Context) {
         if let document = PDFDocument(data: data) {
             pdfView.document = document
@@ -863,4 +903,3 @@ struct AddDocumentSheet: View {
         }
     }
 }
-
