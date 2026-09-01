@@ -229,13 +229,16 @@ private struct HomeTasksList: View {
             }
         }
         .refreshable {
-            // Refresh immediately from the local store, then wait up to 3 seconds
-            // for any in-flight CloudKit push to arrive and be written to SQLite.
-            // NSPersistentStoreRemoteChangeNotification will update the list if new
-            // data lands during that window; the second refresh catches anything
-            // that arrived in the final moment.
-            cloudSharingService.refreshSharedStore()
+            // Mark as refreshing so the remote-change observer doesn't increment
+            // sharedStoreVersion mid-animation (which would destroy this list and kill
+            // the spinner). refreshAllObjects() still runs on each remote change.
+            cloudSharingService.isRefreshing = true
+            defer { cloudSharingService.isRefreshing = false }
+            // Hold the spinner open for 3 seconds, giving CloudKit time to push any
+            // pending changes. refreshAllObjects() fires automatically via the
+            // remoteChangeObserver if data arrives during this window.
             try? await Task.sleep(for: .seconds(3))
+            // Hard refresh at the end: recreates HomeTasksList with the latest store data.
             cloudSharingService.refreshSharedStore()
         }
         .overlay(alignment: .bottomTrailing) {

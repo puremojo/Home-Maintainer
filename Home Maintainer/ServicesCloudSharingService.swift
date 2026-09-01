@@ -46,6 +46,9 @@ final class CloudSharingService {
     private var eventObserver: NSObjectProtocol?
     private var foregroundObserver: NSObjectProtocol?
     private var remoteChangeObserver: NSObjectProtocol?
+    /// Set to true while a pull-to-refresh is in progress so the remote-change observer
+    /// doesn't destroy the list (and its spinner) with a sharedStoreVersion increment.
+    @ObservationIgnored var isRefreshing = false
     /// Saved when acceptShare is called before the shared store is ready (recovery path).
     private var pendingShareMetadata: CKShare.Metadata?
     /// Prevents infinite retry if the fresh store still fails to accept.
@@ -155,13 +158,20 @@ final class CloudSharingService {
         // underlying SQLite file changes — including on CloudKit imports that arrive
         // while the app is in the foreground.  This is what makes the list update
         // automatically without requiring a background/foreground cycle.
+        // Guard on persistentCloudKitContainer (not sharedStoreIsReady) so this fires
+        // even if the shared-store URL matching failed to locate the store.
         remoteChangeObserver = NotificationCenter.default.addObserver(
             forName: .NSPersistentStoreRemoteChange,
             object: nil,
             queue: .main
         ) { [weak self] _ in
-            guard let self, self.sharedStoreIsReady else { return }
+            guard let self, self.persistentCloudKitContainer != nil else { return }
             self.persistentCloudKitContainer?.viewContext.refreshAllObjects()
+            // Skip the sharedStoreVersion increment while pull-to-refresh is active.
+            // The spinner lives on the list view; incrementing sharedStoreVersion
+            // destroys that view via .id() and kills the spinner. The pull-to-refresh
+            // closure calls refreshSharedStore() itself at the end.
+            guard !self.isRefreshing else { return }
             self.sharedStoreVersion += 1
         }
     }
