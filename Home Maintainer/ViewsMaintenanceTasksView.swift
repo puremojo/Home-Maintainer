@@ -229,6 +229,13 @@ private struct HomeTasksList: View {
             }
         }
         .refreshable {
+            // Refresh immediately from the local store, then wait up to 3 seconds
+            // for any in-flight CloudKit push to arrive and be written to SQLite.
+            // NSPersistentStoreRemoteChangeNotification will update the list if new
+            // data lands during that window; the second refresh catches anything
+            // that arrived in the final moment.
+            cloudSharingService.refreshSharedStore()
+            try? await Task.sleep(for: .seconds(3))
             cloudSharingService.refreshSharedStore()
         }
         .overlay(alignment: .bottomTrailing) {
