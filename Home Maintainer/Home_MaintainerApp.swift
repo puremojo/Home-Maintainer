@@ -63,23 +63,36 @@ struct Home_MaintainerApp: App {
         }
 
         let privateDesc = NSPersistentStoreDescription(url: privateURL)
+        // NSPersistentCloudKitContainer requires persistent history and remote-change notifications.
+        // Set them explicitly — some OS versions don't add them automatically.
+        privateDesc.setOption(true as NSNumber, forKey: NSPersistentHistoryTrackingKey)
+        privateDesc.setOption(true as NSNumber, forKey: NSPersistentStoreRemoteChangeNotificationPostOptionKey)
         let privateOptions = NSPersistentCloudKitContainerOptions(containerIdentifier: "iCloud.EstraDOS.Home-Maintainer")
         privateOptions.databaseScope = .private
         privateDesc.cloudKitContainerOptions = privateOptions
 
         let sharedDesc = NSPersistentStoreDescription(url: sharedURL)
+        sharedDesc.setOption(true as NSNumber, forKey: NSPersistentHistoryTrackingKey)
+        sharedDesc.setOption(true as NSNumber, forKey: NSPersistentStoreRemoteChangeNotificationPostOptionKey)
         let sharedOptions = NSPersistentCloudKitContainerOptions(containerIdentifier: "iCloud.EstraDOS.Home-Maintainer")
         sharedOptions.databaseScope = .shared
         sharedDesc.cloudKitContainerOptions = sharedOptions
 
         container.persistentStoreDescriptions = [privateDesc, sharedDesc]
 
+        // Clear any previous load error; will be re-set below if loading fails.
+        UserDefaults.standard.removeObject(forKey: "debug_coredata_error")
+
         container.loadPersistentStores { description, error in
             if let error {
-                // Include the store name and full error in the crash message so
-                // it appears in the next crash report (not just EXC_BREAKPOINT).
                 let storeName = description.url?.lastPathComponent ?? "unknown"
-                fatalError("CoreData '\(storeName)' failed to load: \(error)")
+                let msg = "'\(storeName)': \(error as NSError)"
+                NSLog("❌ CoreData load error — \(msg)")
+                // Persist so ContentView can surface it on next launch via an alert.
+                UserDefaults.standard.set(msg, forKey: "debug_coredata_error")
+                UserDefaults.standard.synchronize()
+                // Do NOT fatalError — let the app start in degraded mode so the
+                // error alert is visible rather than another silent EXC_BREAKPOINT crash.
             }
         }
 

@@ -29,6 +29,7 @@ struct ContentView: View {
     @State private var shareAcceptErrorMessage: String?
     @AppStorage("homeIDStringMigrationDone") private var homeIDStringMigrationDone = false
     @AppStorage("sectionIDStringMigrationDone") private var sectionIDStringMigrationDone = false
+    @AppStorage("debug_coredata_error") private var coreDataError: String = ""
 
     var body: some View {
         if !authService.isSignedIn {
@@ -82,6 +83,14 @@ struct ContentView: View {
             Button("OK") { shareAcceptErrorMessage = nil; cloudSharingService.shareAcceptError = nil }
         } message: {
             Text(shareAcceptErrorMessage ?? "")
+        }
+        .alert("CoreData Error (Debug)", isPresented: Binding(
+            get: { !coreDataError.isEmpty },
+            set: { if !$0 { coreDataError = "" } }
+        )) {
+            Button("Clear") { coreDataError = "" }
+        } message: {
+            Text(coreDataError)
         }
         .sheet(
             isPresented: Binding(
