@@ -33,6 +33,9 @@ enum AppDataModel {
             a.name = name
             a.attributeType = .UUIDAttributeType
             a.isOptional = optional
+            // CloudKit requires a default value for every non-optional attribute.
+            // Real records always get a proper UUID from make(); this zero UUID is just a sentinel.
+            if !optional { a.defaultValue = UUID(uuidString: "00000000-0000-0000-0000-000000000000") }
             return a
         }
 
