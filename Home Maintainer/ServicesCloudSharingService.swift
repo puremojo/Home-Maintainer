@@ -46,10 +46,10 @@ final class CloudSharingService {
     private var eventObserver: NSObjectProtocol?
     private var foregroundObserver: NSObjectProtocol?
     private var remoteChangeObserver: NSObjectProtocol?
-    /// Set to true while a pull-to-refresh is in progress so the remote-change observer
-    /// doesn't destroy the list (and its spinner) with a sharedStoreVersion increment.
-    @ObservationIgnored var isRefreshing = false
-    /// Saved when acceptShare is called before the shared store is ready (recovery path).
+    /// Merges any non-viewContext save (e.g., CloudKit import context) into viewContext
+    /// so @FetchRequest sees new objects immediately.
+    private var contextSaveObserver: NSObjectProtocol?
+/// Saved when acceptShare is called before the shared store is ready (recovery path).
     private var pendingShareMetadata: CKShare.Metadata?
     /// Prevents infinite retry if the fresh store still fails to accept.
     private var hasAttemptedStoreRecovery = false
@@ -166,13 +166,28 @@ final class CloudSharingService {
             queue: .main
         ) { [weak self] _ in
             guard let self, self.persistentCloudKitContainer != nil else { return }
+            NSLog("[CloudSharingService] NSPersistentStoreRemoteChange fired — refreshing")
             self.persistentCloudKitContainer?.viewContext.refreshAllObjects()
-            // Skip the sharedStoreVersion increment while pull-to-refresh is active.
-            // The spinner lives on the list view; incrementing sharedStoreVersion
-            // destroys that view via .id() and kills the spinner. The pull-to-refresh
-            // closure calls refreshSharedStore() itself at the end.
-            guard !self.isRefreshing else { return }
             self.sharedStoreVersion += 1
+        }
+
+        // Explicitly merge every non-viewContext CoreData save into the viewContext.
+        // This is what automaticallyMergesChangesFromParent does under the hood —
+        // we're making it explicit because iOS 26 appears to drop that merge for
+        // NSPersistentCloudKitContainer's internal import contexts, which prevents
+        // @FetchRequest from seeing newly imported CloudKit records.
+        let weakContainer = container
+        contextSaveObserver = NotificationCenter.default.addObserver(
+            forName: NSNotification.Name.NSManagedObjectContextDidSave,
+            object: nil,
+            queue: nil
+        ) { notification in
+            guard let savedCtx = notification.object as? NSManagedObjectContext,
+                  savedCtx !== weakContainer.viewContext else { return }
+            NSLog("[CloudSharingService] NSManagedObjectContextDidSave from non-viewContext — merging into viewContext")
+            DispatchQueue.main.async {
+                weakContainer.viewContext.mergeChanges(fromContextDidSave: notification)
+            }
         }
     }
 
@@ -180,6 +195,7 @@ final class CloudSharingService {
         if let observer = eventObserver { NotificationCenter.default.removeObserver(observer) }
         if let observer = foregroundObserver { NotificationCenter.default.removeObserver(observer) }
         if let observer = remoteChangeObserver { NotificationCenter.default.removeObserver(observer) }
+        if let observer = contextSaveObserver { NotificationCenter.default.removeObserver(observer) }
     }
 
     // MARK: - Store URL

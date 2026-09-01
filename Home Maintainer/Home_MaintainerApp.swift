@@ -146,6 +146,36 @@ class AppDelegate: NSObject, UIApplicationDelegate {
         didReceiveRemoteNotification userInfo: [AnyHashable: Any],
         fetchCompletionHandler completionHandler: @escaping (UIBackgroundFetchResult) -> Void
     ) {
-        completionHandler(.newData)
+        // Previously called completionHandler immediately, which closed the background
+        // execution window before NSPersistentCloudKitContainer could run its import.
+        // Now we wait for the import event to complete (up to 10 seconds), then call
+        // through. This keeps the execution window open so the import can actually run.
+        var observer: NSObjectProtocol?
+        var done = false
+
+        func finish(_ result: UIBackgroundFetchResult) {
+            guard !done else { return }
+            done = true
+            if let obs = observer { NotificationCenter.default.removeObserver(obs) }
+            completionHandler(result)
+        }
+
+        observer = NotificationCenter.default.addObserver(
+            forName: NSPersistentCloudKitContainer.eventChangedNotification,
+            object: nil,
+            queue: .main
+        ) { notification in
+            guard let event = notification.userInfo?[NSPersistentCloudKitContainer.eventNotificationUserInfoKey]
+                    as? NSPersistentCloudKitContainer.Event,
+                  event.type == .import,
+                  event.endDate != nil else { return }
+            NSLog("[AppDelegate] CloudKit import event received — succeeded=%@", event.succeeded ? "YES" : "NO")
+            finish(event.succeeded ? .newData : .failed)
+        }
+
+        // Safety valve: iOS allows 30 seconds; call at 10s if no import event arrives.
+        DispatchQueue.main.asyncAfter(deadline: .now() + 10) {
+            finish(.newData)
+        }
     }
 }

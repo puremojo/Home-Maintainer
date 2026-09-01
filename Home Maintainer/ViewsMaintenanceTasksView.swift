@@ -228,19 +228,6 @@ private struct HomeTasksList: View {
                 }
             }
         }
-        .refreshable {
-            // Mark as refreshing so the remote-change observer doesn't increment
-            // sharedStoreVersion mid-animation (which would destroy this list and kill
-            // the spinner). refreshAllObjects() still runs on each remote change.
-            cloudSharingService.isRefreshing = true
-            defer { cloudSharingService.isRefreshing = false }
-            // Hold the spinner open for 3 seconds, giving CloudKit time to push any
-            // pending changes. refreshAllObjects() fires automatically via the
-            // remoteChangeObserver if data arrives during this window.
-            try? await Task.sleep(for: .seconds(3))
-            // Hard refresh at the end: recreates HomeTasksList with the latest store data.
-            cloudSharingService.refreshSharedStore()
-        }
         .overlay(alignment: .bottomTrailing) {
             // Always-visible sync diagnostic panel.
             // q = @FetchRequest result count (tasks shown in list)
