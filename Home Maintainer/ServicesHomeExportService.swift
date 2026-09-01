@@ -4,9 +4,9 @@
 //
 
 import Foundation
-import SwiftData
+import CoreData
 
-// MARK: - Snapshot types (Codable mirror of the SwiftData models)
+// MARK: - Snapshot types (Codable mirror of the CoreData models)
 
 struct HomeExportData: Codable {
     let version: Int
@@ -131,7 +131,7 @@ enum HomeExportService {
                 createdDate: home.createdDate,
                 ownerName: home.ownerName
             ),
-            tasks: (home.tasks ?? []).map { task in
+            tasks: ((home.tasks as? Set<MaintenanceTask>) ?? []).map { task in
                 TaskSnapshot(
                     name: task.name,
                     taskDescription: task.taskDescription,
@@ -143,7 +143,7 @@ enum HomeExportService {
                     nextDue: task.nextDue
                 )
             },
-            appliances: (home.appliances ?? []).map { appliance in
+            appliances: ((home.appliances as? Set<Appliance>) ?? []).map { appliance in
                 ApplianceSnapshot(
                     name: appliance.name,
                     type: appliance.type,
@@ -155,7 +155,7 @@ enum HomeExportService {
                     createdAt: appliance.createdAt
                 )
             },
-            serviceProviders: (home.serviceProviders ?? []).map { provider in
+            serviceProviders: ((home.serviceProviders as? Set<ServiceProvider>) ?? []).map { provider in
                 ProviderSnapshot(
                     name: provider.name,
                     category: provider.category,
@@ -165,11 +165,11 @@ enum HomeExportService {
                     website: provider.website,
                     notes: provider.notes,
                     isFavorite: provider.isFavorite,
-                    rating: provider.rating,
+                    rating: Int(provider.rating),
                     createdAt: provider.createdAt
                 )
             },
-            projects: (home.projects ?? []).map { project in
+            projects: ((home.projects as? Set<RepairProject>) ?? []).map { project in
                 ProjectSnapshot(
                     title: project.title,
                     projectDescription: project.projectDescription,
@@ -180,14 +180,14 @@ enum HomeExportService {
                     createdAt: project.createdAt
                 )
             },
-            documentSections: (home.documentSections ?? [])
+            documentSections: ((home.documentSections as? Set<DocumentSection>) ?? [])
                 .sorted(by: { $0.createdAt < $1.createdAt })
                 .map { section in
                     DocumentSectionSnapshot(
                         name: section.name,
-                        sortOrder: section.sortOrder,
+                        sortOrder: Int(section.sortOrder),
                         createdAt: section.createdAt,
-                        documents: (section.documents ?? [])
+                        documents: ((section.documents as? Set<HomeDocument>) ?? [])
                             .sorted(by: { $0.createdAt < $1.createdAt })
                             .map { doc in
                                 HomeDocumentSnapshot(
@@ -212,95 +212,95 @@ enum HomeExportService {
 
     /// Creates a new Home (with new UUIDs) from exported data and inserts it into the context.
     @discardableResult
-    static func importHome(from data: Data, into context: ModelContext) throws -> Home {
+    static func importHome(from data: Data, into context: NSManagedObjectContext) throws -> Home {
         let decoder = JSONDecoder()
         decoder.dateDecodingStrategy = .iso8601
         let snapshot = try decoder.decode(HomeExportData.self, from: data)
 
-        let home = Home(
+        let home = Home.make(
             name: snapshot.home.name,
-            address: snapshot.home.address,
             ownerName: snapshot.home.ownerName,
-            isLocallyCreated: false  // imported from someone else
+            address: snapshot.home.address,
+            isLocallyCreated: false,  // imported from someone else
+            in: context
         )
         home.createdDate = snapshot.home.createdDate
-        context.insert(home)
 
         for t in snapshot.tasks {
-            let task = MaintenanceTask(
+            let task = MaintenanceTask.make(
                 name: t.name,
                 description: t.taskDescription,
                 frequency: t.frequency,
-                room: t.room
+                room: t.room,
+                in: context
             )
             task.isActive = t.isActive
             task.lastCompleted = t.lastCompleted
             task.nextDue = t.nextDue
             task.home = home
             task.homeIDString = home.id.uuidString
-            context.insert(task)
         }
 
         for a in snapshot.appliances {
-            let appliance = Appliance(
+            let appliance = Appliance.make(
                 name: a.name,
                 type: a.type,
                 manufacturer: a.manufacturer,
-                modelNumber: a.modelNumber
+                modelNumber: a.modelNumber,
+                in: context
             )
             appliance.purchaseDate = a.purchaseDate
             appliance.warrantyExpiration = a.warrantyExpiration
             appliance.notes = a.notes
             appliance.home = home
             appliance.homeIDString = home.id.uuidString
-            context.insert(appliance)
         }
 
         for p in snapshot.serviceProviders {
-            let provider = ServiceProvider(
+            let provider = ServiceProvider.make(
                 name: p.name,
                 category: p.category,
                 phoneNumber: p.phoneNumber,
-                email: p.email
+                email: p.email,
+                in: context
             )
             provider.address = p.address
             provider.website = p.website
             provider.notes = p.notes
             provider.isFavorite = p.isFavorite
-            provider.rating = p.rating
+            provider.rating = Int32(p.rating)
             provider.home = home
             provider.homeIDString = home.id.uuidString
-            context.insert(provider)
         }
 
         for proj in snapshot.projects {
-            let project = RepairProject(
+            let project = RepairProject.make(
                 title: proj.title,
                 description: proj.projectDescription,
                 category: proj.category,
-                priority: proj.priority
+                priority: proj.priority,
+                in: context
             )
             project.status = proj.status
             project.notes = proj.notes
             project.home = home
             project.homeIDString = home.id.uuidString
-            context.insert(project)
         }
 
         for (i, sec) in snapshot.documentSections.enumerated() {
-            let section = DocumentSection(name: sec.name, sortOrder: i)
+            let section = DocumentSection.make(name: sec.name, sortOrder: i, in: context)
             section.home = home
-            context.insert(section)
+            section.homeIDString = home.id.uuidString
 
             for docSnap in sec.documents {
-                let doc = HomeDocument(title: docSnap.title)
+                let doc = HomeDocument.make(title: docSnap.title, in: context)
                 doc.attachmentData = docSnap.attachmentData
                 doc.attachmentName = docSnap.attachmentName
                 doc.attachmentContentType = docSnap.attachmentContentType
                 doc.section = section
                 doc.home = home
                 doc.homeIDString = home.id.uuidString
-                context.insert(doc)
+                doc.sectionIDString = section.id.uuidString
             }
         }
 

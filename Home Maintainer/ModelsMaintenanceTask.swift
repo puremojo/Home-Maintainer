@@ -1,113 +1,165 @@
 //
-//  MaintenanceTask.swift
+//  ModelsMaintenanceTask.swift
 //  Home Maintainer
-//
-//  Created by Michael Estrada on 11/11/24.
 //
 
 import Foundation
-import SwiftData
+import CoreData
 import SwiftUI
 
-@Model
-final class MaintenanceTask {
-    var id: UUID = UUID()
-    var name: String = ""
-    var taskDescription: String = ""
-    var room: String = ""
-    var frequency: TaskFrequency = TaskFrequency.monthly
-    // Scalar mirror of frequency. Views must read safeFrequency / frequencyDisplayName
-    // (which decode this string) rather than frequency directly, because accessing
-    // a Codable stored property triggers ModelContext.fulfill which crashes for
-    // objects in the shared CloudKit store where no schema configuration is registered.
-    var frequencyEncoded: String = "monthly"
-    var lastCompleted: Date?
-    var nextDue: Date?
-    var isActive: Bool = true
-    @Relationship(deleteRule: .cascade, inverse: \MaintenanceRecord.task)
-    var records: [MaintenanceRecord]?
-    var appliance: Appliance?
-    @Relationship(deleteRule: .cascade, inverse: \ProductLink.task)
-    var products: [ProductLink]?
-    var taskDocuments: [TaskDocument]?
-    var createdAt: Date = Date()
-    var home: Home?
-    // Scalar mirrors of relationship IDs. Accessing @Relationship properties on
-    // shared-store objects triggers ModelContext.fulfill which crashes; all
-    // membership checks must use these scalars instead.
-    var homeIDString: String? = nil
-    var sourceProjectIDString: String? = nil
-    var sourceProject: RepairProject?
+// MARK: - MaintenanceTask
 
-    // Decoded from the scalar frequencyEncoded — safe to access on shared-store objects.
-    var safeFrequency: TaskFrequency { TaskFrequency.from(encoded: frequencyEncoded) }
-    var frequencyDisplayName: String { safeFrequency.displayName }
+@objc(MaintenanceTask)
+public final class MaintenanceTask: NSManagedObject, Identifiable {
+    @NSManaged public var id: UUID
+    @NSManaged public var name: String
+    @NSManaged public var taskDescription: String
+    @NSManaged public var room: String
+    @NSManaged public var frequencyEncoded: String
+    @NSManaged public var lastCompleted: Date?
+    @NSManaged public var nextDue: Date?
+    @NSManaged public var isActive: Bool
+    @NSManaged public var createdAt: Date
+    @NSManaged public var homeIDString: String?
+    @NSManaged public var sourceProjectIDString: String?
+    @NSManaged private var taskDocumentsJSON: String?
 
-    init(name: String, description: String, frequency: TaskFrequency, appliance: Appliance? = nil, room: String = "") {
-        self.id = UUID()
-        self.name = name
-        self.taskDescription = description
-        self.room = room
-        self.frequency = frequency
-        self.frequencyEncoded = frequency.encoded
-        self.appliance = appliance
-        self.isActive = true
-        self.createdAt = Date()
-        self.lastCompleted = nil
-        self.taskDocuments = []
-        self.nextDue = calculateNextDue(from: Date(), frequency: frequency)
+    // Relationships
+    @NSManaged public var home: Home?
+    @NSManaged public var appliance: Appliance?
+    @NSManaged public var records: NSSet?
+    @NSManaged public var products: NSSet?
+    @NSManaged public var sourceProject: RepairProject?
+
+    // MARK: - Frequency (computed, backed by frequencyEncoded)
+
+    var frequency: TaskFrequency {
+        get { TaskFrequency.from(encoded: frequencyEncoded) }
+        set { frequencyEncoded = newValue.encoded }
+    }
+
+    var safeFrequency: TaskFrequency { frequency }
+    var frequencyDisplayName: String { frequency.displayName }
+
+    // MARK: - Task documents (JSON-backed [TaskDocument])
+
+    var taskDocuments: [TaskDocument] {
+        get { jsonDecode(from: taskDocumentsJSON) ?? [] }
+        set { taskDocumentsJSON = jsonEncode(newValue) }
     }
 
     func addDocument(name: String, data: Data, contentType: String, title: String = "") {
-        let document = TaskDocument(name: name, data: data, contentType: contentType, title: title)
-        if taskDocuments == nil { taskDocuments = [] }
-        taskDocuments?.append(document)
+        var docs = taskDocuments
+        docs.append(TaskDocument(name: name, data: data, contentType: contentType, title: title))
+        taskDocuments = docs
     }
 
     func removeDocument(_ document: TaskDocument) {
-        taskDocuments?.removeAll { $0.id == document.id }
+        taskDocuments = taskDocuments.filter { $0.id != document.id }
     }
 
-    func markCompleted(on date: Date = Date()) {
-        self.lastCompleted = date
-        self.nextDue = calculateNextDue(from: date, frequency: frequency)
-    }
-
-    func reopen() {
-        self.isActive = true
-        self.lastCompleted = nil
-        self.updateFrequency(self.frequency)
-    }
-
-    /// Updates the frequency and recomputes the next due date based on the new
-    /// schedule (from the last completion if available, otherwise from now).
-    func updateFrequency(_ newFrequency: TaskFrequency) {
-        self.frequency = newFrequency
-        self.frequencyEncoded = newFrequency.encoded
-        let base = lastCompleted ?? Date()
-        self.nextDue = calculateNextDue(from: base, frequency: newFrequency)
-    }
-
-    private func calculateNextDue(from date: Date, frequency: TaskFrequency) -> Date? {
-        frequency.nextDue(from: date)
-    }
+    // MARK: - Computed state
 
     var isOverdue: Bool {
-        guard let nextDue = nextDue else { return false }
+        guard let nextDue else { return false }
         return nextDue < Date()
     }
 
-    // Check if task is completed and not yet due again
     var isCompletedForCurrentCycle: Bool {
-        guard let lastCompleted = lastCompleted,
-              let nextDue = nextDue else {
-            return false
-        }
-
-        // If we've completed it and the next due date hasn't passed yet
+        guard lastCompleted != nil, let nextDue else { return false }
         return nextDue > Date()
     }
+
+    // MARK: - Actions
+
+    func markCompleted(on date: Date = Date()) {
+        lastCompleted = date
+        nextDue = frequency.nextDue(from: date)
+        isActive = true
+    }
+
+    func reopen() {
+        isActive = true
+        lastCompleted = nil
+        updateFrequency(frequency)
+    }
+
+    func updateFrequency(_ newFrequency: TaskFrequency) {
+        frequency = newFrequency
+        let base = lastCompleted ?? Date()
+        nextDue = newFrequency.nextDue(from: base)
+    }
+
+    // MARK: - Typed relationship helpers
+
+    var recordArray: [MaintenanceRecord] {
+        (records as? Set<MaintenanceRecord>)?.sorted { $0.completedDate > $1.completedDate } ?? []
+    }
+
+    var productArray: [ProductLink] {
+        (products as? Set<ProductLink>)?.sorted { $0.createdAt < $1.createdAt } ?? []
+    }
+
+    // MARK: - Convenience factory
+
+    @discardableResult
+    static func make(
+        name: String,
+        description: String = "",
+        frequency: TaskFrequency = .monthly,
+        room: String = "",
+        appliance: Appliance? = nil,
+        in context: NSManagedObjectContext
+    ) -> MaintenanceTask {
+        let task = MaintenanceTask(context: context)
+        task.id = UUID()
+        task.name = name
+        task.taskDescription = description
+        task.room = room
+        task.frequencyEncoded = frequency.encoded
+        task.appliance = appliance
+        task.isActive = true
+        task.createdAt = Date()
+        task.nextDue = frequency.nextDue(from: Date())
+        return task
+    }
 }
+
+// MARK: - MaintenanceRecord
+
+@objc(MaintenanceRecord)
+public final class MaintenanceRecord: NSManagedObject, Identifiable {
+    @NSManaged public var id: UUID
+    @NSManaged public var completedDate: Date
+    @NSManaged public var notes: String
+    /// Stores TaskAction.rawValue
+    @NSManaged public var action: String
+    @NSManaged public var task: MaintenanceTask?
+
+    var taskAction: TaskAction {
+        get { TaskAction(rawValue: action) ?? .closed }
+        set { action = newValue.rawValue }
+    }
+
+    @discardableResult
+    static func make(
+        task: MaintenanceTask,
+        completedDate: Date = Date(),
+        notes: String = "",
+        action: TaskAction = .closed,
+        in context: NSManagedObjectContext
+    ) -> MaintenanceRecord {
+        let record = MaintenanceRecord(context: context)
+        record.id = UUID()
+        record.task = task
+        record.completedDate = completedDate
+        record.notes = notes
+        record.action = action.rawValue
+        return record
+    }
+}
+
+// MARK: - TaskFrequency
 
 enum TaskFrequency: Codable, Hashable, Equatable {
     case once
@@ -134,7 +186,6 @@ enum TaskFrequency: Codable, Hashable, Equatable {
         }
     }
 
-    // String encoding used by MaintenanceTask.frequencyEncoded.
     var encoded: String {
         switch self {
         case .once: return "once"
@@ -153,27 +204,27 @@ enum TaskFrequency: Codable, Hashable, Equatable {
         let cal = Calendar.current
         switch self {
         case .once:             return nil
-        case .daily:            return cal.date(byAdding: .day, value: 1, to: date)
-        case .weekly:           return cal.date(byAdding: .weekOfYear, value: 1, to: date)
-        case .biweekly:         return cal.date(byAdding: .weekOfYear, value: 2, to: date)
-        case .monthly:          return cal.date(byAdding: .month, value: 1, to: date)
-        case .quarterly:        return cal.date(byAdding: .month, value: 3, to: date)
-        case .biannually:       return cal.date(byAdding: .month, value: 6, to: date)
-        case .annually:         return cal.date(byAdding: .year, value: 1, to: date)
-        case .custom(let days): return cal.date(byAdding: .day, value: days, to: date)
+        case .daily:            return cal.date(byAdding: .day,        value: 1,    to: date)
+        case .weekly:           return cal.date(byAdding: .weekOfYear, value: 1,    to: date)
+        case .biweekly:         return cal.date(byAdding: .weekOfYear, value: 2,    to: date)
+        case .monthly:          return cal.date(byAdding: .month,      value: 1,    to: date)
+        case .quarterly:        return cal.date(byAdding: .month,      value: 3,    to: date)
+        case .biannually:       return cal.date(byAdding: .month,      value: 6,    to: date)
+        case .annually:         return cal.date(byAdding: .year,       value: 1,    to: date)
+        case .custom(let days): return cal.date(byAdding: .day,        value: days, to: date)
         }
     }
 
     static func from(encoded: String) -> TaskFrequency {
         switch encoded {
-        case "once": return .once
-        case "daily": return .daily
-        case "weekly": return .weekly
-        case "biweekly": return .biweekly
-        case "monthly": return .monthly
-        case "quarterly": return .quarterly
+        case "once":       return .once
+        case "daily":      return .daily
+        case "weekly":     return .weekly
+        case "biweekly":   return .biweekly
+        case "monthly":    return .monthly
+        case "quarterly":  return .quarterly
         case "biannually": return .biannually
-        case "annually": return .annually
+        case "annually":   return .annually
         default:
             if encoded.hasPrefix("custom:"), let days = Int(encoded.dropFirst(7)) {
                 return .custom(days: days)
@@ -183,22 +234,7 @@ enum TaskFrequency: Codable, Hashable, Equatable {
     }
 }
 
-@Model
-final class MaintenanceRecord {
-    var id: UUID = UUID()
-    var task: MaintenanceTask?
-    var completedDate: Date = Date()
-    var notes: String = ""
-    var action: TaskAction = TaskAction.closed
-
-    init(task: MaintenanceTask, completedDate: Date = Date(), notes: String = "", action: TaskAction = .closed) {
-        self.id = UUID()
-        self.task = task
-        self.completedDate = completedDate
-        self.notes = notes
-        self.action = action
-    }
-}
+// MARK: - TaskAction
 
 enum TaskAction: String, Codable {
     case closed = "Closed"
@@ -214,10 +250,12 @@ enum TaskAction: String, Codable {
     }
 }
 
+// MARK: - TaskDocument (Codable value type — not a Core Data entity)
+
 struct TaskDocument: Codable, Identifiable {
     let id: UUID
-    let name: String        // actual file name
-    var title: String       // user-provided display title (empty = use name)
+    let name: String
+    var title: String
     let data: Data
     let contentType: String
     let dateAdded: Date
@@ -231,7 +269,6 @@ struct TaskDocument: Codable, Identifiable {
         self.dateAdded = Date()
     }
 
-    // Backward-compat: old records lack `title`
     enum CodingKeys: String, CodingKey {
         case id, name, title, data, contentType, dateAdded
     }
@@ -263,4 +300,16 @@ struct TaskDocument: Codable, Identifiable {
         default: return "doc.fill"
         }
     }
+}
+
+// MARK: - JSON helpers (module-internal)
+
+func jsonDecode<T: Decodable>(from json: String?) -> T? {
+    guard let json, let data = json.data(using: .utf8) else { return nil }
+    return try? JSONDecoder().decode(T.self, from: data)
+}
+
+func jsonEncode<T: Encodable>(_ value: T) -> String? {
+    guard let data = try? JSONEncoder().encode(value) else { return nil }
+    return String(data: data, encoding: .utf8)
 }

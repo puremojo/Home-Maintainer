@@ -2,11 +2,9 @@
 //  Home_MaintainerApp.swift
 //  Home Maintainer
 //
-//  Created by Michael Estrada on 11/11/24.
-//
 
 import SwiftUI
-import SwiftData
+import CoreData
 import FirebaseCore
 import FirebaseAppCheck
 
@@ -22,11 +20,6 @@ struct Home_MaintainerApp: App {
     @State private var homeManager = HomeManager()
     @State private var cloudSharingService: CloudSharingService
 
-    // Stored without a default value so it can be initialized in init() after
-    // CloudSharingService registers its notification observer. This ensures the
-    // NSPersistentCloudKitContainer.eventChangedNotification is never missed.
-    let sharedModelContainer: ModelContainer
-
     init() {
         #if DEBUG
         AppCheck.setAppCheckProviderFactory(AppCheckDebugProviderFactory())
@@ -38,55 +31,74 @@ struct Home_MaintainerApp: App {
         _geminiService = State(initialValue: GeminiService())
         _subscriptionService = State(initialValue: SubscriptionService())
 
-        // Register the CloudSharingService observer BEFORE creating the ModelContainer,
-        // so the eventChangedNotification is captured even when CloudKit is already warm.
-        let sharingService = CloudSharingService()
+        // Create the container FIRST so it can be injected into CloudSharingService.
+        // Both private and shared stores are configured at init time, which causes
+        // NSPersistentCloudKitContainer to register push-driven CloudKit subscriptions
+        // for BOTH stores — eliminating the 30-minute polling fallback.
+        let container = Self.makePersistentCloudKitContainer()
+        let sharingService = CloudSharingService(container: container)
         _cloudSharingService = State(initialValue: sharingService)
         CloudSharingService.shared = sharingService
-
-        sharedModelContainer = Self.makeModelContainer()
     }
 
-    private static func makeModelContainer() -> ModelContainer {
-        let schema = Schema([
-            Home.self,
-            MaintenanceTask.self,
-            MaintenanceRecord.self,
-            Appliance.self,
-            AppliancePhoto.self,
-            ServiceProvider.self,
-            RepairProject.self,
-            ProductLink.self,
-            ProjectContact.self,
-            Quote.self,
-            Invoice.self,
-            ChatConversation.self,
-            ChatMessageData.self,
-            ChatImageData.self,
-            DocumentSection.self,
-            HomeDocument.self
-        ])
+    static func makePersistentCloudKitContainer() -> NSPersistentCloudKitContainer {
+        let model = AppDataModel.buildModel()
+        let container = NSPersistentCloudKitContainer(name: "HomeMaintainer", managedObjectModel: model)
 
-        let modelConfiguration = ModelConfiguration(
-            schema: schema,
-            isStoredInMemoryOnly: false,
-            cloudKitDatabase: .private("iCloud.EstraDOS.Home-Maintainer")
-        )
+        let baseURL = NSPersistentContainer.defaultDirectoryURL()
+        let privateURL = baseURL.appendingPathComponent("HomeMaintainer.sqlite")
+        let sharedURL  = baseURL.appendingPathComponent("HomeMaintainerShared.sqlite")
 
-        do {
-            return try ModelContainer(
-                for: schema,
-                configurations: [modelConfiguration]
-            )
-        } catch {
-            // CloudKit unavailable (e.g. simulator without iCloud) — fall back to local-only store.
-            let localConfig = ModelConfiguration(schema: schema, isStoredInMemoryOnly: false, cloudKitDatabase: .none)
-            do {
-                return try ModelContainer(for: schema, configurations: [localConfig])
-            } catch {
-                fatalError("Could not create ModelContainer: \(error)")
+        // Pre-flight: probe each store file with the current model.
+        // If the file exists but is incompatible (e.g., leftover from an earlier schema),
+        // destroy it so loadPersistentStores creates a fresh empty store.
+        for url in [privateURL, sharedURL] where FileManager.default.fileExists(atPath: url.path) {
+            let probe = NSPersistentStoreCoordinator(managedObjectModel: model)
+            let opts: [AnyHashable: Any] = [NSReadOnlyPersistentStoreOption: true]
+            if (try? probe.addPersistentStore(ofType: NSSQLiteStoreType, configurationName: nil,
+                                              at: url, options: opts)) == nil {
+                NSLog("⚠️ Destroying incompatible CoreData store: \(url.lastPathComponent)")
+                try? probe.destroyPersistentStore(at: url, ofType: NSSQLiteStoreType, options: nil)
             }
         }
+
+        let privateDesc = NSPersistentStoreDescription(url: privateURL)
+        // NSPersistentCloudKitContainer requires persistent history and remote-change notifications.
+        // Set them explicitly — some OS versions don't add them automatically.
+        privateDesc.setOption(true as NSNumber, forKey: NSPersistentHistoryTrackingKey)
+        privateDesc.setOption(true as NSNumber, forKey: NSPersistentStoreRemoteChangeNotificationPostOptionKey)
+        let privateOptions = NSPersistentCloudKitContainerOptions(containerIdentifier: "iCloud.EstraDOS.Home-Maintainer")
+        privateOptions.databaseScope = .private
+        privateDesc.cloudKitContainerOptions = privateOptions
+
+        let sharedDesc = NSPersistentStoreDescription(url: sharedURL)
+        sharedDesc.setOption(true as NSNumber, forKey: NSPersistentHistoryTrackingKey)
+        sharedDesc.setOption(true as NSNumber, forKey: NSPersistentStoreRemoteChangeNotificationPostOptionKey)
+        let sharedOptions = NSPersistentCloudKitContainerOptions(containerIdentifier: "iCloud.EstraDOS.Home-Maintainer")
+        sharedOptions.databaseScope = .shared
+        sharedDesc.cloudKitContainerOptions = sharedOptions
+
+        container.persistentStoreDescriptions = [privateDesc, sharedDesc]
+
+        // Clear any previous load error; will be re-set below if loading fails.
+        UserDefaults.standard.removeObject(forKey: "debug_coredata_error")
+
+        container.loadPersistentStores { description, error in
+            if let error {
+                let storeName = description.url?.lastPathComponent ?? "unknown"
+                let msg = "'\(storeName)': \(error as NSError)"
+                NSLog("❌ CoreData load error — \(msg)")
+                // Persist so ContentView can surface it on next launch via an alert.
+                UserDefaults.standard.set(msg, forKey: "debug_coredata_error")
+                UserDefaults.standard.synchronize()
+                // Do NOT fatalError — let the app start in degraded mode so the
+                // error alert is visible rather than another silent EXC_BREAKPOINT crash.
+            }
+        }
+
+        container.viewContext.automaticallyMergesChangesFromParent = true
+        container.viewContext.mergePolicy = NSMergeByPropertyObjectTrumpMergePolicy
+        return container
     }
 
     var body: some Scene {
@@ -99,15 +111,15 @@ struct Home_MaintainerApp: App {
                 .environment(subscriptionService)
                 .environment(homeManager)
                 .environment(cloudSharingService)
+                .environment(\.managedObjectContext, cloudSharingService.viewContext)
                 .onOpenURL { url in
                     homeManager.pendingImportURL = url
                 }
         }
-        .modelContainer(sharedModelContainer)
     }
 }
 
-// MARK: - AppDelegate (routes scene connections to SceneDelegate for CloudKit share acceptance)
+// MARK: - AppDelegate
 
 class AppDelegate: NSObject, UIApplicationDelegate {
     func application(
@@ -115,8 +127,6 @@ class AppDelegate: NSObject, UIApplicationDelegate {
         didFinishLaunchingWithOptions launchOptions: [UIApplication.LaunchOptionsKey: Any]? = nil
     ) -> Bool {
         // Register with APNS so CloudKit can deliver silent push notifications to this device.
-        // Without this call, NSPersistentCloudKitContainer never receives a device token and
-        // falls back to periodic polling (~30 min) instead of near-instant push-driven sync.
         application.registerForRemoteNotifications()
         return true
     }
@@ -131,15 +141,41 @@ class AppDelegate: NSObject, UIApplicationDelegate {
         return config
     }
 
-    // Without this handler, iOS has no signal to grant the app background time when
-    // CloudKit sends a silent push saying shared-zone data has changed. NSPersistentCloudKitContainer
-    // handles the actual fetch internally; we just need to acknowledge the notification so iOS
-    // gives the container enough time to complete the import.
     func application(
         _ application: UIApplication,
         didReceiveRemoteNotification userInfo: [AnyHashable: Any],
         fetchCompletionHandler completionHandler: @escaping (UIBackgroundFetchResult) -> Void
     ) {
-        completionHandler(.newData)
+        // Previously called completionHandler immediately, which closed the background
+        // execution window before NSPersistentCloudKitContainer could run its import.
+        // Now we wait for the import event to complete (up to 10 seconds), then call
+        // through. This keeps the execution window open so the import can actually run.
+        var observer: NSObjectProtocol?
+        var done = false
+
+        func finish(_ result: UIBackgroundFetchResult) {
+            guard !done else { return }
+            done = true
+            if let obs = observer { NotificationCenter.default.removeObserver(obs) }
+            completionHandler(result)
+        }
+
+        observer = NotificationCenter.default.addObserver(
+            forName: NSPersistentCloudKitContainer.eventChangedNotification,
+            object: nil,
+            queue: .main
+        ) { notification in
+            guard let event = notification.userInfo?[NSPersistentCloudKitContainer.eventNotificationUserInfoKey]
+                    as? NSPersistentCloudKitContainer.Event,
+                  event.type == .import,
+                  event.endDate != nil else { return }
+            NSLog("[AppDelegate] CloudKit import event received — succeeded=%@", event.succeeded ? "YES" : "NO")
+            finish(event.succeeded ? .newData : .failed)
+        }
+
+        // Safety valve: iOS allows 30 seconds; call at 10s if no import event arrives.
+        DispatchQueue.main.asyncAfter(deadline: .now() + 10) {
+            finish(.newData)
+        }
     }
 }

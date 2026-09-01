@@ -6,14 +6,14 @@
 //
 
 import SwiftUI
-import SwiftData
+import CoreData
 
 // MARK: - Provider Detail
 
 struct ServiceProviderDetailView: View {
-    @Environment(\.modelContext) private var modelContext
-    @Bindable var provider: ServiceProvider
-    @Query private var allProjects: [RepairProject]
+    @Environment(\.managedObjectContext) private var viewContext
+    var provider: ServiceProvider
+    @FetchRequest(sortDescriptors: [SortDescriptor(\.createdAt, order: .reverse)]) private var allProjects: FetchedResults<RepairProject>
 
     @State private var isEditing = false
 
@@ -37,13 +37,13 @@ struct ServiceProviderDetailView: View {
                     LabeledContent("Type", value: type)
                 }
 
-                if let rating = provider.googleRating {
+                if provider.googleRating > 0 {
                     LabeledContent("Google Rating") {
                         HStack(spacing: 4) {
                             Image(systemName: "star.fill")
                                 .foregroundStyle(.yellow)
                                 .font(.caption)
-                            Text(String(format: "%.1f", rating))
+                            Text(String(format: "%.1f", provider.googleRating))
                                 .font(.subheadline)
                         }
                     }
@@ -57,7 +57,7 @@ struct ServiceProviderDetailView: View {
                     LabeledContent("My Rating") {
                         HStack(spacing: 2) {
                             ForEach(0..<5) { i in
-                                Image(systemName: i < provider.rating ? "star.fill" : "star")
+                                Image(systemName: i < Int(provider.rating) ? "star.fill" : "star")
                                     .font(.caption)
                                     .foregroundStyle(.yellow)
                             }
@@ -128,13 +128,19 @@ struct ServiceProviderDetailView: View {
 
             // MARK: Notes
             Section("Notes") {
-                TextField("Add notes…", text: $provider.notes, axis: .vertical)
+                TextField("Add notes…", text: Binding(
+                    get: { provider.notes },
+                    set: { provider.notes = $0; try? viewContext.save() }
+                ), axis: .vertical)
                     .lineLimit(3...10)
             }
 
             // MARK: Favorite
             Section {
-                Toggle("Favorite", isOn: $provider.isFavorite)
+                Toggle("Favorite", isOn: Binding(
+                    get: { provider.isFavorite },
+                    set: { provider.isFavorite = $0; try? viewContext.save() }
+                ))
             }
 
             // MARK: Linked Projects
@@ -184,29 +190,53 @@ struct ServiceProviderDetailView: View {
 
 struct EditServiceProviderView: View {
     @Environment(\.dismiss) private var dismiss
-    @Bindable var provider: ServiceProvider
+    @Environment(\.managedObjectContext) private var viewContext
+    var provider: ServiceProvider
+
+    @State private var name: String
+    @State private var category: ServiceCategory
+    @State private var phoneNumber: String
+    @State private var email: String
+    @State private var address: String
+    @State private var website: String
+    @State private var notes: String
+    @State private var isFavorite: Bool
+    @State private var rating: Int
+
+    init(provider: ServiceProvider) {
+        self.provider = provider
+        _name = State(initialValue: provider.name)
+        _category = State(initialValue: provider.category)
+        _phoneNumber = State(initialValue: provider.phoneNumber)
+        _email = State(initialValue: provider.email)
+        _address = State(initialValue: provider.address)
+        _website = State(initialValue: provider.website)
+        _notes = State(initialValue: provider.notes)
+        _isFavorite = State(initialValue: provider.isFavorite)
+        _rating = State(initialValue: Int(provider.rating))
+    }
 
     var body: some View {
         NavigationStack {
             Form {
                 Section("Basic Information") {
-                    TextField("Name", text: $provider.name)
-                    Picker("Category", selection: $provider.category) {
-                        ForEach(ServiceCategory.allCases, id: \.self) { category in
-                            Label(category.rawValue, systemImage: category.systemImage)
-                                .tag(category)
+                    TextField("Name", text: $name)
+                    Picker("Category", selection: $category) {
+                        ForEach(ServiceCategory.allCases, id: \.self) { cat in
+                            Label(cat.rawValue, systemImage: cat.systemImage)
+                                .tag(cat)
                         }
                     }
                 }
 
                 Section("Contact Information") {
-                    TextField("Phone Number", text: $provider.phoneNumber)
+                    TextField("Phone Number", text: $phoneNumber)
                         .keyboardType(.phonePad)
-                    TextField("Email", text: $provider.email)
+                    TextField("Email", text: $email)
                         .keyboardType(.emailAddress)
                         .textInputAutocapitalization(.never)
-                    TextField("Address", text: $provider.address)
-                    TextField("Website", text: $provider.website)
+                    TextField("Address", text: $address)
+                    TextField("Website", text: $website)
                         .keyboardType(.URL)
                         .textInputAutocapitalization(.never)
                 }
@@ -216,13 +246,13 @@ struct EditServiceProviderView: View {
                         Text("Rating")
                         Spacer()
                         ForEach(1...5, id: \.self) { star in
-                            Image(systemName: star <= provider.rating ? "star.fill" : "star")
+                            Image(systemName: star <= rating ? "star.fill" : "star")
                                 .foregroundStyle(.yellow)
-                                .onTapGesture { provider.rating = star }
+                                .onTapGesture { rating = star }
                         }
-                        if provider.rating > 0 {
+                        if rating > 0 {
                             Button {
-                                provider.rating = 0
+                                rating = 0
                             } label: {
                                 Image(systemName: "xmark.circle.fill")
                                     .foregroundStyle(.gray)
@@ -233,11 +263,11 @@ struct EditServiceProviderView: View {
                 }
 
                 Section {
-                    Toggle("Favorite", isOn: $provider.isFavorite)
+                    Toggle("Favorite", isOn: $isFavorite)
                 }
 
                 Section("Notes") {
-                    TextField("Notes", text: $provider.notes, axis: .vertical)
+                    TextField("Notes", text: $notes, axis: .vertical)
                         .lineLimit(3...6)
                 }
             }
@@ -245,7 +275,19 @@ struct EditServiceProviderView: View {
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .confirmationAction) {
-                    Button("Done") { dismiss() }
+                    Button("Done") {
+                        provider.name = name
+                        provider.category = category
+                        provider.phoneNumber = phoneNumber
+                        provider.email = email
+                        provider.address = address
+                        provider.website = website
+                        provider.notes = notes
+                        provider.isFavorite = isFavorite
+                        provider.rating = Int32(rating)
+                        try? viewContext.save()
+                        dismiss()
+                    }
                 }
             }
         }
@@ -257,14 +299,14 @@ struct EditServiceProviderView: View {
 
 struct ProviderPickerSheet: View {
     @Environment(\.dismiss) private var dismiss
-    @Query(sort: \ServiceProvider.name) private var allProviders: [ServiceProvider]
+    @FetchRequest(sortDescriptors: [SortDescriptor(\.name)]) private var allProviders: FetchedResults<ServiceProvider>
 
     let home: Home?
     let onSelect: (ServiceProvider) -> Void
 
     private var providers: [ServiceProvider] {
         guard let home else { return [] }
-        return allProviders.filter { $0.home?.id == home.id }
+        return allProviders.filter { $0.homeIDString == home.id.uuidString }
     }
 
     private var providersByCategory: [ServiceCategory: [ServiceProvider]] {
@@ -343,17 +385,30 @@ struct ProviderPickerSheet: View {
 }
 
 #Preview {
-    let config = ModelConfiguration(isStoredInMemoryOnly: true)
-    let container = try! ModelContainer(for: ServiceProvider.self, configurations: config)
+    let model = AppDataModel.buildModel()
+    let container = NSPersistentContainer(name: "Preview", managedObjectModel: model)
+    let desc = NSPersistentStoreDescription()
+    desc.type = NSInMemoryStoreType
+    container.persistentStoreDescriptions = [desc]
+    container.loadPersistentStores { _, _ in }
+    let ctx = container.viewContext
 
-    let provider = ServiceProvider(name: "ABC Plumbing", category: .plumber, phoneNumber: "(555) 123-4567", email: "")
+    let provider = ServiceProvider(context: ctx)
+    provider.id = UUID()
+    provider.name = "ABC Plumbing"
+    provider.category = .plumber
+    provider.phoneNumber = "(555) 123-4567"
+    provider.email = ""
+    provider.address = ""
+    provider.website = ""
+    provider.notes = ""
     provider.googleRating = 4.7
     provider.googlePriceLevel = "PRICE_LEVEL_MODERATE"
     provider.weekdayHours = ["Monday: 8:00 AM – 5:00 PM", "Tuesday: 8:00 AM – 5:00 PM"]
-    container.mainContext.insert(provider)
+    try? ctx.save()
 
     return NavigationStack {
         ServiceProviderDetailView(provider: provider)
     }
-    .modelContainer(container)
+    .environment(\.managedObjectContext, ctx)
 }

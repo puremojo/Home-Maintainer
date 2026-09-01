@@ -6,7 +6,7 @@
 //
 
 import SwiftUI
-import SwiftData
+import CoreData
 import PhotosUI
 
 // MARK: - Linkified text
@@ -269,7 +269,7 @@ enum ProductEditorTarget: Identifiable {
 }
 
 struct LiveProductsSection: View {
-    @Environment(\.modelContext) private var modelContext
+    @Environment(\.managedObjectContext) private var viewContext
 
     let products: [ProductLink]
     let detach: (ProductLink) -> Void
@@ -283,7 +283,8 @@ struct LiveProductsSection: View {
                     .swipeActions(edge: .trailing) {
                         Button(role: .destructive) {
                             detach(product)
-                            modelContext.delete(product)
+                            viewContext.delete(product)
+                            try? viewContext.save()
                         } label: {
                             Label("Delete", systemImage: "trash")
                         }
@@ -310,7 +311,7 @@ struct LiveProductsSection: View {
 /// detail screen's `List` via `.sheet(item:)`. `attach` wires a newly created
 /// product to its parent's relationship.
 struct ProductEditorSheet: View {
-    @Environment(\.modelContext) private var modelContext
+    @Environment(\.managedObjectContext) private var viewContext
 
     let target: ProductEditorTarget
     let attach: (ProductLink) -> Void
@@ -319,15 +320,16 @@ struct ProductEditorSheet: View {
         switch target {
         case .add:
             ProductLinkEditorSheet(title: "Add Product", name: "", urlString: "", imageData: nil) { name, urlString, imageData in
-                let product = ProductLink(name: name, urlString: urlString, imageData: imageData)
-                modelContext.insert(product)
+                let product = ProductLink.make(name: name, urlString: urlString, imageData: imageData, in: viewContext)
                 attach(product)
+                try? viewContext.save()
             }
         case .edit(let product):
             ProductLinkEditorSheet(title: "Edit Product", name: product.name, urlString: product.urlString, imageData: product.imageData) { name, urlString, imageData in
                 product.name = name
                 product.urlString = urlString
                 product.imageData = imageData
+                try? viewContext.save()
             }
         }
     }

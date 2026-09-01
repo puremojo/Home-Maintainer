@@ -6,7 +6,7 @@
 //
 
 import SwiftUI
-import SwiftData
+import CoreData
 import CoreLocation
 
 // MARK: - Find Businesses Modal
@@ -14,7 +14,7 @@ import CoreLocation
 struct FindBusinessesView: View {
     @Environment(LocationManager.self) private var locationManager
     @Environment(LocalBusinessSearchService.self) private var searchService
-    @Environment(\.modelContext) private var modelContext
+    @Environment(\.managedObjectContext) private var viewContext
     @Environment(HomeManager.self) private var homeManager
     @Environment(\.dismiss) private var dismiss
 
@@ -192,9 +192,9 @@ struct FindBusinessesView: View {
 // MARK: - Google Place Row
 
 struct GooglePlaceRow: View {
-    @Environment(\.modelContext) private var modelContext
+    @Environment(\.managedObjectContext) private var viewContext
     @Environment(CloudSharingService.self) private var cloudSharingService
-    @Query private var allProviders: [ServiceProvider]
+    @FetchRequest(sortDescriptors: [SortDescriptor(\.name)]) private var allProviders: FetchedResults<ServiceProvider>
 
     let place: GooglePlaceResult
     let userLocation: CLLocation?
@@ -324,16 +324,17 @@ struct GooglePlaceRow: View {
     }
 
     private func addProvider() {
-        let provider = ServiceProvider(
+        let provider = ServiceProvider.make(
             name: place.name,
             category: place.category,
             phoneNumber: place.phoneNumber ?? "",
-            email: ""
+            email: "",
+            in: viewContext
         )
         provider.address = place.address
         provider.website = place.website ?? ""
         provider.googlePlaceID = place.id
-        provider.googleRating = place.rating
+        provider.googleRating = place.rating ?? 0
         provider.googlePriceLevel = place.priceLevel
         provider.weekdayHours = place.weekdayDescriptions
         provider.businessTypes = place.types.isEmpty ? nil : place.types
@@ -341,7 +342,7 @@ struct GooglePlaceRow: View {
             provider.home = home
         }
         provider.homeIDString = home?.id.uuidString
-        modelContext.insert(provider)
+        try? viewContext.save()
     }
 }
 
@@ -349,9 +350,16 @@ struct GooglePlaceRow: View {
 typealias ServiceProviderSuggestionsView = FindBusinessesView
 
 #Preview {
-    FindBusinessesView()
+    let model = AppDataModel.buildModel()
+    let container = NSPersistentContainer(name: "Preview", managedObjectModel: model)
+    let desc = NSPersistentStoreDescription()
+    desc.type = NSInMemoryStoreType
+    container.persistentStoreDescriptions = [desc]
+    container.loadPersistentStores { _, _ in }
+
+    return FindBusinessesView()
         .environment(LocationManager())
         .environment(LocalBusinessSearchService())
         .environment(HomeManager())
-        .modelContainer(for: ServiceProvider.self, inMemory: true)
+        .environment(\.managedObjectContext, container.viewContext)
 }

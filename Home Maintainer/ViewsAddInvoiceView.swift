@@ -6,15 +6,15 @@
 //
 
 import SwiftUI
-import SwiftData
+import CoreData
 
 struct AddInvoiceView: View {
-    @Environment(\.modelContext) private var modelContext
+    @Environment(\.managedObjectContext) private var viewContext
     @Environment(\.dismiss) private var dismiss
-    @Query private var providers: [ServiceProvider]
-    
+    @FetchRequest(sortDescriptors: [SortDescriptor(\.name)]) private var providers: FetchedResults<ServiceProvider>
+
     let project: RepairProject
-    
+
     @State private var selectedProvider: ServiceProvider?
     @State private var amount: Double = 0
     @State private var invoiceDate = Date()
@@ -23,18 +23,18 @@ struct AddInvoiceView: View {
     @State private var isPaid = false
     @State private var paidDate = Date()
     @State private var details = ""
-    
+
     var body: some View {
         NavigationStack {
             Form {
                 Section("Provider") {
                     Picker("Service Provider", selection: $selectedProvider) {
                         Text("Select Provider").tag(nil as ServiceProvider?)
-                        
+
                         if let hiredProvider = project.hiredProvider {
                             Text("\(hiredProvider.name) (Hired)").tag(hiredProvider as ServiceProvider?)
                         }
-                        
+
                         ForEach(providers.sorted(by: { $0.name < $1.name })) { provider in
                             if provider.id != project.hiredProvider?.id {
                                 Text(provider.name).tag(provider as ServiceProvider?)
@@ -42,7 +42,7 @@ struct AddInvoiceView: View {
                         }
                     }
                 }
-                
+
                 Section("Invoice Details") {
                     HStack {
                         Text("Amount")
@@ -51,24 +51,24 @@ struct AddInvoiceView: View {
                             .keyboardType(.decimalPad)
                             .multilineTextAlignment(.trailing)
                     }
-                    
+
                     DatePicker("Invoice Date", selection: $invoiceDate, displayedComponents: .date)
-                    
+
                     Toggle("Due Date", isOn: $hasDueDate)
-                    
+
                     if hasDueDate {
                         DatePicker("Due Date", selection: $dueDate, displayedComponents: .date)
                     }
                 }
-                
+
                 Section("Payment Status") {
                     Toggle("Paid", isOn: $isPaid)
-                    
+
                     if isPaid {
                         DatePicker("Paid Date", selection: $paidDate, displayedComponents: .date)
                     }
                 }
-                
+
                 Section("Details") {
                     TextField("Details", text: $details, axis: .vertical)
                         .lineLimit(3...6)
@@ -82,7 +82,7 @@ struct AddInvoiceView: View {
                         dismiss()
                     }
                 }
-                
+
                 ToolbarItem(placement: .confirmationAction) {
                     Button("Add") {
                         addInvoice()
@@ -98,43 +98,43 @@ struct AddInvoiceView: View {
             }
         }
     }
-    
+
     private func addInvoice() {
         guard let provider = selectedProvider else { return }
-        
-        let invoice = Invoice(
-            project: project,
-            provider: provider,
-            amount: amount,
-            invoiceDate: invoiceDate
-        )
-        
+
+        let invoice = Invoice.make(project: project, provider: provider, amount: amount, in: viewContext)
+        invoice.invoiceDate = invoiceDate
+
         if hasDueDate {
             invoice.dueDate = dueDate
         }
-        
+
         invoice.isPaid = isPaid
-        
+
         if isPaid {
             invoice.paidDate = paidDate
         }
-        
+
         invoice.details = details
-        
+
         project.invoice = invoice
-        
-        modelContext.insert(invoice)
+
+        try? viewContext.save()
         dismiss()
     }
 }
 
 #Preview {
-    let config = ModelConfiguration(isStoredInMemoryOnly: true)
-    let container = try! ModelContainer(for: RepairProject.self, ServiceProvider.self, configurations: config)
-    
-    let project = RepairProject(title: "Test", description: "Test", category: .plumber)
-    container.mainContext.insert(project)
-    
+    let model = AppDataModel.buildModel()
+    let container = NSPersistentContainer(name: "Preview", managedObjectModel: model)
+    let desc = NSPersistentStoreDescription()
+    desc.type = NSInMemoryStoreType
+    container.persistentStoreDescriptions = [desc]
+    container.loadPersistentStores { _, _ in }
+
+    let project = RepairProject.make(title: "Test", description: "Test", category: .plumber, in: container.viewContext)
+    try? container.viewContext.save()
+
     return AddInvoiceView(project: project)
-        .modelContainer(container)
+        .environment(\.managedObjectContext, container.viewContext)
 }

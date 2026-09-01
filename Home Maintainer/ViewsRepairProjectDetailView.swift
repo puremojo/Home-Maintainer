@@ -6,13 +6,13 @@
 //
 
 import SwiftUI
-import SwiftData
+import CoreData
 
 struct RepairProjectDetailView: View {
-    @Environment(\.modelContext) private var modelContext
-    @Query private var providers: [ServiceProvider]
-    @Query private var allHomeDocuments: [HomeDocument]
-    @Bindable var project: RepairProject
+    @Environment(\.managedObjectContext) private var viewContext
+    @FetchRequest(sortDescriptors: [SortDescriptor(\.name)]) private var providers: FetchedResults<ServiceProvider>
+    @FetchRequest(sortDescriptors: [SortDescriptor(\.createdAt)]) private var allHomeDocuments: FetchedResults<HomeDocument>
+    var project: RepairProject
 
     @State private var isEditing = false
     @State private var showingAddContact = false
@@ -33,11 +33,11 @@ struct RepairProjectDetailView: View {
     }
 
     private var sortedSubTasks: [MaintenanceTask] {
-        (project.subTasks ?? []).sorted { $0.name < $1.name }
+        project.subTaskArray
     }
 
     private var sortedWorkDates: [ProjectWorkDate] {
-        (project.workDates ?? []).sorted { $0.scheduledDate < $1.scheduledDate }
+        project.workDates.sorted { $0.scheduledDate < $1.scheduledDate }
     }
 
     var body: some View {
@@ -47,7 +47,10 @@ struct RepairProjectDetailView: View {
                 LabeledContent("Description", value: project.projectDescription)
                 LabeledContent("Category", value: project.category.rawValue)
 
-                Picker("Priority", selection: $project.priority) {
+                Picker("Priority", selection: Binding(
+                    get: { project.priority },
+                    set: { project.priority = $0; try? viewContext.save() }
+                )) {
                     ForEach(ProjectPriority.allCases, id: \.self) { priority in
                         HStack {
                             Image(systemName: priority.systemImage)
@@ -58,16 +61,19 @@ struct RepairProjectDetailView: View {
                     }
                 }
 
-                Picker("Status", selection: $project.status) {
+                Picker("Status", selection: Binding(
+                    get: { project.status },
+                    set: { project.status = $0; try? viewContext.save() }
+                )) {
                     ForEach(ProjectStatus.allCases, id: \.self) { status in
                         Label(status.rawValue, systemImage: status.systemImage)
                             .tag(status)
                     }
                 }
 
-                if let totalCost = project.totalCost {
+                if project.totalCost > 0 {
                     LabeledContent("Total Cost") {
-                        Text(totalCost, format: .currency(code: "USD"))
+                        Text(project.totalCost, format: .currency(code: "USD"))
                     }
                 }
 
@@ -94,8 +100,9 @@ struct RepairProjectDetailView: View {
                 .onDelete { offsets in
                     let tasks = sortedSubTasks
                     for index in offsets {
-                        modelContext.delete(tasks[index])
+                        viewContext.delete(tasks[index])
                     }
+                    try? viewContext.save()
                 }
 
                 Button {
@@ -122,6 +129,7 @@ struct RepairProjectDetailView: View {
                     for index in offsets {
                         project.removeWorkDate(dates[index])
                     }
+                    try? viewContext.save()
                 }
 
                 Button {
@@ -165,16 +173,17 @@ struct RepairProjectDetailView: View {
                             }
                         }
                     }
-                    if let rating = hp.googleRating {
+                    if hp.googleRating > 0 {
                         LabeledContent("Rating") {
                             HStack(spacing: 2) {
                                 Image(systemName: "star.fill").foregroundStyle(.yellow).font(.caption)
-                                Text(String(format: "%.1f", rating))
+                                Text(String(format: "%.1f", hp.googleRating))
                             }
                         }
                     }
                     Button("Change Provider", role: .destructive) {
                         project.hiredProvider = nil
+                        try? viewContext.save()
                     }
                 } else {
                     Button {
@@ -188,7 +197,7 @@ struct RepairProjectDetailView: View {
             }
 
             Section {
-                ForEach(project.contacts ?? []) { contact in
+                ForEach(project.contactArray) { contact in
                     ContactRowView(contact: contact)
                 }
 
@@ -201,13 +210,13 @@ struct RepairProjectDetailView: View {
                 HStack {
                     Text("Contacts")
                     Spacer()
-                    Text("\((project.contacts ?? []).count)")
+                    Text("\(project.contactArray.count)")
                         .foregroundStyle(.secondary)
                 }
             }
 
             Section {
-                ForEach(project.quotes ?? []) { quote in
+                ForEach(project.quoteArray) { quote in
                     QuoteRowView(quote: quote)
                 }
 
@@ -220,7 +229,8 @@ struct RepairProjectDetailView: View {
                 HStack {
                     Text("Quotes")
                     Spacer()
-                    if let quotes = project.quotes, !quotes.isEmpty {
+                    let quotes = project.quoteArray
+                    if !quotes.isEmpty {
                         Text("\(quotes.count) • Total: \(project.totalQuotedAmount, format: .currency(code: "USD"))")
                             .foregroundStyle(.secondary)
                     } else {
@@ -243,14 +253,14 @@ struct RepairProjectDetailView: View {
             }
 
             LiveProductsSection(
-                products: project.products ?? [],
+                products: project.productArray,
                 detach: { $0.project = nil },
                 onAdd: { productEditorTarget = .add },
                 onEdit: { productEditorTarget = .edit($0) }
             )
 
             Section {
-                ForEach(project.projectDocuments ?? []) { document in
+                ForEach(project.projectDocuments) { document in
                     Button {
                         selectedProjectDocument = document
                     } label: {
@@ -287,10 +297,11 @@ struct RepairProjectDetailView: View {
                     }
                 }
                 .onDelete { offsets in
-                    let docs = project.projectDocuments ?? []
+                    let docs = project.projectDocuments
                     for index in offsets {
                         project.removeDocument(docs[index])
                     }
+                    try? viewContext.save()
                 }
 
                 ForEach(linkedHomeDocuments) { doc in
@@ -371,6 +382,7 @@ struct RepairProjectDetailView: View {
         .sheet(isPresented: $showingProviderPicker) {
             ProviderPickerSheet(home: project.home) { provider in
                 project.hiredProvider = provider
+                try? viewContext.save()
             }
         }
     }
@@ -582,7 +594,7 @@ struct InvoiceRowView: View {
 // MARK: - Add Sub Task
 
 struct AddProjectSubTaskView: View {
-    @Environment(\.modelContext) private var modelContext
+    @Environment(\.managedObjectContext) private var viewContext
     @Environment(\.dismiss) private var dismiss
 
     let project: RepairProject
@@ -619,23 +631,28 @@ struct AddProjectSubTaskView: View {
     }
 
     private func addSubTask() {
-        let task = MaintenanceTask(
+        let task = MaintenanceTask.make(
             name: name,
             description: taskDescription,
-            frequency: .once
+            frequency: .once,
+            in: viewContext
         )
         task.home = project.home
         task.homeIDString = project.homeIDString
         task.sourceProject = project
         task.sourceProjectIDString = project.id.uuidString
-        modelContext.insert(task)
 
         for draft in productDrafts where !draft.isEmpty {
-            let product = ProductLink(name: draft.name, urlString: draft.urlString, imageData: draft.imageData)
+            let product = ProductLink.make(
+                name: draft.name,
+                urlString: draft.urlString,
+                imageData: draft.imageData,
+                in: viewContext
+            )
             product.task = task
-            modelContext.insert(product)
         }
 
+        try? viewContext.save()
         dismiss()
     }
 }
@@ -643,9 +660,10 @@ struct AddProjectSubTaskView: View {
 // MARK: - Add Work Date
 
 struct AddWorkDateView: View {
+    @Environment(\.managedObjectContext) private var viewContext
     @Environment(\.dismiss) private var dismiss
 
-    @Bindable var project: RepairProject
+    var project: RepairProject
 
     @State private var label = ""
     @State private var scheduledDate = Date()
@@ -694,9 +712,13 @@ struct AddWorkDateView: View {
             durationDays: days,
             durationMinutes: totalMinutes
         )
-
-        if project.workDates == nil { project.workDates = [] }
-        project.workDates?.append(workDate)
+        project.addWorkDate(
+            label: workDate.label,
+            scheduledDate: workDate.scheduledDate,
+            durationDays: days,
+            durationMinutes: totalMinutes
+        )
+        try? viewContext.save()
 
         let title = project.title
         Task {
@@ -711,47 +733,64 @@ struct AddWorkDateView: View {
 
 struct EditRepairProjectView: View {
     @Environment(\.dismiss) private var dismiss
-    @Bindable var project: RepairProject
+    @Environment(\.managedObjectContext) private var viewContext
+    var project: RepairProject
 
-    @State private var totalCostText = ""
+    @State private var title: String
+    @State private var projectDescription: String
+    @State private var notes: String
+    @State private var category: ServiceCategory
+    @State private var priority: ProjectPriority
+    @State private var status: ProjectStatus
+    @State private var startDate: Date
+    @State private var completionDate: Date
+    @State private var totalCostText: String
 
     init(project: RepairProject) {
         self.project = project
-        _totalCostText = State(initialValue: project.totalCost.map { String($0) } ?? "")
+        _title = State(initialValue: project.title)
+        _projectDescription = State(initialValue: project.projectDescription)
+        _notes = State(initialValue: project.notes)
+        _category = State(initialValue: project.category)
+        _priority = State(initialValue: project.priority)
+        _status = State(initialValue: project.status)
+        _startDate = State(initialValue: project.startDate ?? Date())
+        _completionDate = State(initialValue: project.completionDate ?? Date())
+        _totalCostText = State(initialValue: project.totalCost > 0 ? String(project.totalCost) : "")
     }
 
     var body: some View {
         NavigationStack {
             Form {
                 Section("Project Information") {
-                    TextField("Title", text: $project.title)
-                    TextField("Description", text: $project.projectDescription, axis: .vertical)
+                    TextField("Title", text: $title)
+                    TextField("Description", text: $projectDescription, axis: .vertical)
                         .lineLimit(3...6)
                 }
 
                 Section("Details") {
-                    Picker("Category", selection: $project.category) {
-                        ForEach(ServiceCategory.allCases, id: \.self) { category in
-                            Label(category.rawValue, systemImage: category.systemImage)
-                                .tag(category)
+                    Picker("Category", selection: $category) {
+                        ForEach(ServiceCategory.allCases, id: \.self) { cat in
+                            Label(cat.rawValue, systemImage: cat.systemImage)
+                                .tag(cat)
                         }
                     }
 
-                    Picker("Priority", selection: $project.priority) {
-                        ForEach(ProjectPriority.allCases, id: \.self) { priority in
+                    Picker("Priority", selection: $priority) {
+                        ForEach(ProjectPriority.allCases, id: \.self) { p in
                             HStack {
-                                Image(systemName: priority.systemImage)
-                                    .foregroundStyle(priority.color)
-                                Text(priority.displayName)
+                                Image(systemName: p.systemImage)
+                                    .foregroundStyle(p.color)
+                                Text(p.displayName)
                             }
-                            .tag(priority)
+                            .tag(p)
                         }
                     }
 
-                    Picker("Status", selection: $project.status) {
-                        ForEach(ProjectStatus.allCases, id: \.self) { status in
-                            Label(status.rawValue, systemImage: status.systemImage)
-                                .tag(status)
+                    Picker("Status", selection: $status) {
+                        ForEach(ProjectStatus.allCases, id: \.self) { s in
+                            Label(s.rawValue, systemImage: s.systemImage)
+                                .tag(s)
                         }
                     }
                 }
@@ -769,25 +808,19 @@ struct EditRepairProjectView: View {
                 Section("Dates") {
                     DatePicker(
                         "Start Date",
-                        selection: Binding(
-                            get: { project.startDate ?? Date() },
-                            set: { project.startDate = $0 }
-                        ),
+                        selection: $startDate,
                         displayedComponents: .date
                     )
 
                     DatePicker(
                         "Completion Date",
-                        selection: Binding(
-                            get: { project.completionDate ?? Date() },
-                            set: { project.completionDate = $0 }
-                        ),
+                        selection: $completionDate,
                         displayedComponents: .date
                     )
                 }
 
                 Section("Notes") {
-                    TextField("Notes", text: $project.notes, axis: .vertical)
+                    TextField("Notes", text: $notes, axis: .vertical)
                         .lineLimit(3...6)
                 }
             }
@@ -796,7 +829,16 @@ struct EditRepairProjectView: View {
             .toolbar {
                 ToolbarItem(placement: .confirmationAction) {
                     Button("Done") {
-                        project.totalCost = Double(totalCostText)
+                        project.title = title
+                        project.projectDescription = projectDescription
+                        project.notes = notes
+                        project.category = category
+                        project.priority = priority
+                        project.status = status
+                        project.startDate = startDate
+                        project.completionDate = completionDate
+                        project.totalCost = Double(totalCostText) ?? 0
+                        try? viewContext.save()
                         dismiss()
                     }
                 }
@@ -806,18 +848,27 @@ struct EditRepairProjectView: View {
 }
 
 #Preview {
-    let config = ModelConfiguration(isStoredInMemoryOnly: true)
-    let container = try! ModelContainer(for: RepairProject.self, configurations: config)
+    let model = AppDataModel.buildModel()
+    let container = NSPersistentContainer(name: "Preview", managedObjectModel: model)
+    let desc = NSPersistentStoreDescription()
+    desc.type = NSInMemoryStoreType
+    container.persistentStoreDescriptions = [desc]
+    container.loadPersistentStores { _, _ in }
+    let ctx = container.viewContext
 
-    let project = RepairProject(
-        title: "Fix Leaking Pipe",
-        description: "Bathroom sink has a leak",
-        category: .plumber
-    )
-    container.mainContext.insert(project)
+    let project = RepairProject(context: ctx)
+    project.id = UUID()
+    project.title = "Fix Leaking Pipe"
+    project.projectDescription = "Bathroom sink has a leak"
+    project.category = .plumber
+    project.priority = .medium
+    project.status = .planning
+    project.notes = ""
+    project.createdAt = Date()
+    try? ctx.save()
 
     return NavigationStack {
         RepairProjectDetailView(project: project)
     }
-    .modelContainer(container)
+    .environment(\.managedObjectContext, ctx)
 }

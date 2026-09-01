@@ -6,21 +6,21 @@
 //
 
 import SwiftUI
-import SwiftData
+import CoreData
 
 struct AddProjectContactView: View {
-    @Environment(\.modelContext) private var modelContext
+    @Environment(\.managedObjectContext) private var viewContext
     @Environment(\.dismiss) private var dismiss
-    @Query private var providers: [ServiceProvider]
-    
+    @FetchRequest(sortDescriptors: [SortDescriptor(\.name)]) private var providers: FetchedResults<ServiceProvider>
+
     let project: RepairProject
-    
+
     @State private var selectedProvider: ServiceProvider?
     @State private var contactDate = Date()
     @State private var method: ContactMethod = .phone
     @State private var notes = ""
     @State private var wasHired = false
-    
+
     var body: some View {
         NavigationStack {
             Form {
@@ -32,19 +32,19 @@ struct AddProjectContactView: View {
                         }
                     }
                 }
-                
+
                 Section("Contact Details") {
                     DatePicker("Contact Date", selection: $contactDate, displayedComponents: .date)
-                    
+
                     Picker("Method", selection: $method) {
                         ForEach(ContactMethod.allCases, id: \.self) { method in
                             Text(method.rawValue).tag(method)
                         }
                     }
-                    
+
                     Toggle("Was Hired", isOn: $wasHired)
                 }
-                
+
                 Section("Notes") {
                     TextField("Notes", text: $notes, axis: .vertical)
                         .lineLimit(3...6)
@@ -58,7 +58,7 @@ struct AddProjectContactView: View {
                         dismiss()
                     }
                 }
-                
+
                 ToolbarItem(placement: .confirmationAction) {
                     Button("Add") {
                         addContact()
@@ -68,35 +68,34 @@ struct AddProjectContactView: View {
             }
         }
     }
-    
+
     private func addContact() {
         guard let provider = selectedProvider else { return }
-        
-        let contact = ProjectContact(
-            project: project,
-            provider: provider,
-            contactDate: contactDate,
-            method: method,
-            notes: notes
-        )
+
+        let contact = ProjectContact.make(project: project, provider: provider, method: method, notes: notes, in: viewContext)
+        contact.contactDate = contactDate
         contact.wasHired = wasHired
-        
+
         if wasHired {
             project.hiredProvider = provider
         }
-        
-        modelContext.insert(contact)
+
+        try? viewContext.save()
         dismiss()
     }
 }
 
 #Preview {
-    let config = ModelConfiguration(isStoredInMemoryOnly: true)
-    let container = try! ModelContainer(for: RepairProject.self, ServiceProvider.self, configurations: config)
-    
-    let project = RepairProject(title: "Test", description: "Test", category: .plumber)
-    container.mainContext.insert(project)
-    
+    let model = AppDataModel.buildModel()
+    let container = NSPersistentContainer(name: "Preview", managedObjectModel: model)
+    let desc = NSPersistentStoreDescription()
+    desc.type = NSInMemoryStoreType
+    container.persistentStoreDescriptions = [desc]
+    container.loadPersistentStores { _, _ in }
+
+    let project = RepairProject.make(title: "Test", description: "Test", category: .plumber, in: container.viewContext)
+    try? container.viewContext.save()
+
     return AddProjectContactView(project: project)
-        .modelContainer(container)
+        .environment(\.managedObjectContext, container.viewContext)
 }

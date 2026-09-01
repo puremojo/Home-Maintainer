@@ -1,100 +1,102 @@
 //
-//  ChatConversation.swift
+//  ModelsChatConversation.swift
 //  Home Maintainer
-//
-//  Created by Michael Estrada on 11/11/24.
 //
 
 import Foundation
-import SwiftData
+import CoreData
 import UIKit
 
-@Model
-final class ChatConversation {
-    var id: UUID = UUID()
-    var title: String = "New Chat"
-    var createdAt: Date = Date()
-    var lastMessageAt: Date = Date()
-    @Relationship(deleteRule: .cascade, inverse: \ChatMessageData.conversation) var messages: [ChatMessageData]?
-    /// UUID of the associated Home. Plain attribute (not a relationship) so this model
-    /// stays outside the CloudKit zone share when a Home is shared with other users.
-    var homeID: UUID?
+// MARK: - ChatConversation
 
-    init(title: String = "New Chat") {
-        self.id = UUID()
-        self.title = title
-        self.createdAt = Date()
-        self.lastMessageAt = Date()
-        self.messages = []
+@objc(ChatConversation)
+public final class ChatConversation: NSManagedObject, Identifiable {
+    @NSManaged public var id: UUID
+    @NSManaged public var title: String
+    @NSManaged public var createdAt: Date
+    @NSManaged public var lastMessageAt: Date
+    /// Plain UUID attribute (not a relationship) so ChatConversation stays outside
+    /// the CloudKit zone share when a Home is shared with other users.
+    @NSManaged public var homeID: UUID?
+    @NSManaged public var messages: NSSet?
+
+    var messageArray: [ChatMessageData] {
+        (messages as? Set<ChatMessageData>)?.sorted { $0.timestamp < $1.timestamp } ?? []
     }
 
-    func addMessage(role: MessageRole, content: String, imageData: [Data] = []) {
-        let message = ChatMessageData(role: role, content: content)
+    func addMessage(role: MessageRole, content: String, imageData: [Data] = [], in context: NSManagedObjectContext) {
+        let message = ChatMessageData(context: context)
+        message.id = UUID()
+        message.role = role.rawValue
+        message.content = content
+        message.timestamp = Date()
+        message.conversation = self
 
-        // Save images separately
         for data in imageData {
-            let imageRecord = ChatImageData(imageData: data)
-            message.addImage(imageRecord)
+            let imageRecord = ChatImageData(context: context)
+            imageRecord.id = UUID()
+            imageRecord.imageData = data
+            imageRecord.message = message
         }
 
-        if messages == nil {
-            messages = []
-        }
-        messages?.append(message)
         lastMessageAt = Date()
-
-        // Auto-generate title from first user message if still "New Chat"
         if title == "New Chat", role == .user, !content.isEmpty {
             title = String(content.prefix(50))
         }
     }
+
+    @discardableResult
+    static func make(title: String = "New Chat", homeID: UUID? = nil, in context: NSManagedObjectContext) -> ChatConversation {
+        let conv = ChatConversation(context: context)
+        conv.id = UUID()
+        conv.title = title
+        conv.createdAt = Date()
+        conv.lastMessageAt = Date()
+        conv.homeID = homeID
+        return conv
+    }
 }
 
-@Model
-final class ChatMessageData {
-    var id: UUID = UUID()
-    var role: String = "user" // Store as String instead of enum for SwiftData
-    var content: String = ""
-    @Relationship(deleteRule: .cascade, inverse: \ChatImageData.message) var imageRecords: [ChatImageData]?
-    var timestamp: Date = Date()
-    var conversation: ChatConversation?
+// MARK: - ChatMessageData
 
-    init(role: MessageRole, content: String) {
-        self.id = UUID()
-        self.role = role.rawValue
-        self.content = content
-        self.timestamp = Date()
-        self.imageRecords = []
-    }
-
-    func addImage(_ image: ChatImageData) {
-        if imageRecords == nil {
-            imageRecords = []
-        }
-        imageRecords?.append(image)
-    }
-
-    // Convert to UIImage array for display
-    var images: [UIImage] {
-        (imageRecords ?? []).compactMap { UIImage(data: $0.imageData) }
-    }
+@objc(ChatMessageData)
+public final class ChatMessageData: NSManagedObject, Identifiable {
+    @NSManaged public var id: UUID
+    @NSManaged public var role: String
+    @NSManaged public var content: String
+    @NSManaged public var timestamp: Date
+    @NSManaged public var conversation: ChatConversation?
+    @NSManaged public var imageRecords: NSSet?
 
     var messageRole: MessageRole {
         MessageRole(rawValue: role) ?? .user
     }
-}
 
-@Model
-final class ChatImageData {
-    var id: UUID = UUID()
-    @Attribute(.externalStorage) var imageData: Data = Data()
-    var message: ChatMessageData?
+    var imageRecordArray: [ChatImageData] {
+        (imageRecords as? Set<ChatImageData>)?.sorted { ($0.message?.timestamp ?? Date()) < ($1.message?.timestamp ?? Date()) } ?? []
+    }
 
-    init(imageData: Data) {
-        self.id = UUID()
-        self.imageData = imageData
+    var images: [UIImage] {
+        imageRecordArray.compactMap { $0.imageData.flatMap { UIImage(data: $0) } }
+    }
+
+    func addImage(_ image: ChatImageData) {
+        let mutable = NSMutableSet(set: imageRecords ?? NSSet())
+        mutable.add(image)
+        imageRecords = mutable
     }
 }
+
+// MARK: - ChatImageData
+
+@objc(ChatImageData)
+public final class ChatImageData: NSManagedObject, Identifiable {
+    @NSManaged public var id: UUID
+    @NSManaged public var imageData: Data?
+    @NSManaged public var message: ChatMessageData?
+}
+
+// MARK: - MessageRole
 
 enum MessageRole: String, Codable {
     case user

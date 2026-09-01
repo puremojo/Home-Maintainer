@@ -6,10 +6,10 @@
 //
 
 import SwiftUI
-import SwiftData
+import CoreData
 
 struct AddServiceProviderView: View {
-    @Environment(\.modelContext) private var modelContext
+    @Environment(\.managedObjectContext) private var viewContext
     @Environment(\.dismiss) private var dismiss
     @Environment(CloudSharingService.self) private var cloudSharingService
 
@@ -28,7 +28,7 @@ struct AddServiceProviderView: View {
     @State private var notes = ""
     @State private var isFavorite = false
     @State private var rating = 0
-    
+
     var body: some View {
         NavigationStack {
             Form {
@@ -41,7 +41,7 @@ struct AddServiceProviderView: View {
                         }
                     }
                 }
-                
+
                 Section("Contact Information") {
                     TextField("Phone Number", text: $phoneNumber)
                         .keyboardType(.phonePad)
@@ -53,7 +53,7 @@ struct AddServiceProviderView: View {
                         .keyboardType(.URL)
                         .textInputAutocapitalization(.never)
                 }
-                
+
                 Section("Rating") {
                     HStack {
                         Text("Rating")
@@ -76,11 +76,11 @@ struct AddServiceProviderView: View {
                         }
                     }
                 }
-                
+
                 Section {
                     Toggle("Favorite", isOn: $isFavorite)
                 }
-                
+
                 Section("Notes") {
                     TextField("Notes", text: $notes, axis: .vertical)
                         .lineLimit(3...6)
@@ -94,7 +94,7 @@ struct AddServiceProviderView: View {
                         dismiss()
                     }
                 }
-                
+
                 ToolbarItem(placement: .confirmationAction) {
                     Button("Add") {
                         addProvider()
@@ -104,7 +104,7 @@ struct AddServiceProviderView: View {
             }
         }
     }
-    
+
     private func addProvider() {
         let isSharedHome = home.map {
             cloudSharingService.isInSharedStore(entityName: "Home", id: $0.id)
@@ -130,14 +130,14 @@ struct AddServiceProviderView: View {
             try cloudSharingService.insertIntoSharedStore(entityName: "ServiceProvider") { obj in
                 obj.setValue(UUID(), forKey: "id")
                 obj.setValue(name, forKey: "name")
-                obj.setValue(category.rawValue, forKey: "category")
+                obj.setValue(category.rawValue, forKey: "categoryRaw")
                 obj.setValue(phoneNumber, forKey: "phoneNumber")
                 obj.setValue(email, forKey: "email")
                 obj.setValue(address, forKey: "address")
                 obj.setValue(website, forKey: "website")
                 obj.setValue(notes, forKey: "notes")
                 obj.setValue(isFavorite, forKey: "isFavorite")
-                obj.setValue(rating, forKey: "rating")
+                obj.setValue(Int32(rating), forKey: "rating")
                 obj.setValue(Date(), forKey: "createdAt")
                 obj.setValue(homeIDStr, forKey: "homeIDString")
                 obj.setValue(homeObj, forKey: "home")
@@ -155,14 +155,14 @@ struct AddServiceProviderView: View {
             try cloudSharingService.insertLinkedToHome(entityName: "ServiceProvider") { obj in
                 obj.setValue(UUID(), forKey: "id")
                 obj.setValue(name, forKey: "name")
-                obj.setValue(category.rawValue, forKey: "category")
+                obj.setValue(category.rawValue, forKey: "categoryRaw")
                 obj.setValue(phoneNumber, forKey: "phoneNumber")
                 obj.setValue(email, forKey: "email")
                 obj.setValue(address, forKey: "address")
                 obj.setValue(website, forKey: "website")
                 obj.setValue(notes, forKey: "notes")
                 obj.setValue(isFavorite, forKey: "isFavorite")
-                obj.setValue(rating, forKey: "rating")
+                obj.setValue(Int32(rating), forKey: "rating")
                 obj.setValue(Date(), forKey: "createdAt")
                 obj.setValue(homeIDStr, forKey: "homeIDString")
                 obj.setValue(homeObj, forKey: "home")
@@ -174,26 +174,24 @@ struct AddServiceProviderView: View {
     }
 
     private func addProviderToPrivateStore() {
-        let provider = ServiceProvider(
+        let provider = ServiceProvider.make(
             name: name,
             category: category,
             phoneNumber: phoneNumber,
-            email: email
+            email: email,
+            in: viewContext
         )
         provider.address = address
         provider.website = website
         provider.notes = notes
         provider.isFavorite = isFavorite
-        provider.rating = rating
+        provider.rating = Int32(rating)
         if let home, !cloudSharingService.isInSharedStore(entityName: "Home", id: home.id) {
             provider.home = home
         }
         provider.homeIDString = home?.id.uuidString
-        modelContext.insert(provider)
+        try? viewContext.save()
     }
 }
 
-#Preview {
-    AddServiceProviderView()
-        .modelContainer(for: ServiceProvider.self, inMemory: true)
-}
+#Preview { Text("Preview unavailable") }

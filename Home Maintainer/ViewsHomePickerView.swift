@@ -4,7 +4,7 @@
 //
 
 import SwiftUI
-import SwiftData
+import CoreData
 import UniformTypeIdentifiers
 
 // MARK: - Custom UTI
@@ -16,7 +16,7 @@ extension UTType {
 // MARK: - Home Picker Sheet
 
 struct HomePickerView: View {
-    @Environment(\.modelContext) private var modelContext
+    @Environment(\.managedObjectContext) private var viewContext
     @Environment(\.dismiss) private var dismiss
     @Environment(HomeManager.self) private var homeManager
     @Environment(CloudSharingService.self) private var cloudSharingService
@@ -148,7 +148,7 @@ struct HomePickerView: View {
 
     private func shareHome(_ home: Home) {
         isSharingLoading = true
-        cloudSharingService.shareLink(for: home, from: modelContext) { result in
+        cloudSharingService.shareLink(for: home) { result in
             isSharingLoading = false
             switch result {
             case .success(let url):
@@ -175,7 +175,7 @@ struct HomePickerView: View {
             defer { url.stopAccessingSecurityScopedResource() }
 
             let data = try Data(contentsOf: url)
-            let home = try HomeExportService.importHome(from: data, into: modelContext)
+            let home = try HomeExportService.importHome(from: data, into: viewContext)
             homeManager.select(home)
             dismiss()
         } catch {
@@ -195,21 +195,19 @@ struct HomePickerView: View {
         // again after the save invalidates its backing data.
         homeToDelete = nil
 
-        // Use persistentModelID (safe on any store object) rather than .id to
-        // avoid the SwiftData property-access path when updating selection.
-        let deletingID = home.persistentModelID
-        if homeManager.currentHome?.persistentModelID == deletingID {
+        let deletingID = home.id
+        if homeManager.currentHome?.id == deletingID {
             // Clear selection; ContentView.onChange(of: homes) will auto-select the next home
             // via homeManager.restoreSelection when homes updates after the delete.
             homeManager.clearSelection()
         }
 
         if homeManager.isCurrentUserOwner(of: home) {
-            modelContext.delete(home)
-            try? modelContext.save()
+            viewContext.delete(home)
+            try? viewContext.save()
         } else {
             // Shared homes must be removed at the CloudKit zone level, not via
-            // SwiftData delete — the cascade would try to fault shared-store
+            // CoreData delete — the cascade would try to fault shared-store
             // relationships through ModelContext.fulfill and crash.
             cloudSharingService.removeSharedHome(home)
         }
@@ -217,7 +215,7 @@ struct HomePickerView: View {
 }
 
 // MARK: - Homes List Content
-// Owns @Query so .id(sharedStoreVersion) on the call site forces a fresh fetch
+// Owns @FetchRequest so .id(sharedStoreVersion) on the call site forces a fresh fetch
 // when a new shared home arrives (e.g. after acceptShareInvitations completes).
 
 private struct HomesListContent: View {
@@ -227,7 +225,7 @@ private struct HomesListContent: View {
     let onDelete: (Home) -> Void
 
     @Environment(HomeManager.self) private var homeManager
-    @Query(sort: \Home.createdDate) private var homes: [Home]
+    @FetchRequest(sortDescriptors: [SortDescriptor(\.createdDate)]) private var homes: FetchedResults<Home>
 
     var body: some View {
         if homes.isEmpty {
@@ -380,7 +378,7 @@ struct ActivityView: UIViewControllerRepresentable {
 // MARK: - Import Confirmation (opened via file tap)
 
 struct ImportHomeView: View {
-    @Environment(\.modelContext) private var modelContext
+    @Environment(\.managedObjectContext) private var viewContext
     @Environment(\.dismiss) private var dismiss
     @Environment(HomeManager.self) private var homeManager
 
@@ -478,7 +476,7 @@ struct ImportHomeView: View {
         guard let data = importData else { return }
         isImporting = true
         do {
-            let home = try HomeExportService.importHome(from: data, into: modelContext)
+            let home = try HomeExportService.importHome(from: data, into: viewContext)
             homeManager.select(home)
             homeManager.pendingImportURL = nil
             dismiss()

@@ -6,10 +6,10 @@
 //
 
 import SwiftUI
-import SwiftData
+import CoreData
 
 struct AddRepairProjectView: View {
-    @Environment(\.modelContext) private var modelContext
+    @Environment(\.managedObjectContext) private var viewContext
     @Environment(\.dismiss) private var dismiss
     @Environment(CloudSharingService.self) private var cloudSharingService
 
@@ -26,7 +26,7 @@ struct AddRepairProjectView: View {
     @State private var priority: ProjectPriority = .medium
     @State private var notes = ""
     @State private var productDrafts: [ProductDraft] = []
-    
+
     var body: some View {
         NavigationStack {
             Form {
@@ -35,7 +35,7 @@ struct AddRepairProjectView: View {
                     TextField("Description", text: $description, axis: .vertical)
                         .lineLimit(3...6)
                 }
-                
+
                 Section("Details") {
                     Picker("Category", selection: $category) {
                         ForEach(ServiceCategory.allCases, id: \.self) { category in
@@ -43,7 +43,7 @@ struct AddRepairProjectView: View {
                                 .tag(category)
                         }
                     }
-                    
+
                     Picker("Priority", selection: $priority) {
                         ForEach(ProjectPriority.allCases, id: \.self) { priority in
                             HStack {
@@ -54,7 +54,7 @@ struct AddRepairProjectView: View {
                             .tag(priority)
                         }
                     }
-                    
+
                     Picker("Status", selection: $status) {
                         ForEach(ProjectStatus.allCases, id: \.self) { status in
                             Label(status.rawValue, systemImage: status.systemImage)
@@ -62,7 +62,7 @@ struct AddRepairProjectView: View {
                         }
                     }
                 }
-                
+
                 Section("Notes") {
                     TextField("Notes", text: $notes, axis: .vertical)
                         .lineLimit(3...6)
@@ -78,7 +78,7 @@ struct AddRepairProjectView: View {
                         dismiss()
                     }
                 }
-                
+
                 ToolbarItem(placement: .confirmationAction) {
                     Button("Add") {
                         addProject()
@@ -88,7 +88,7 @@ struct AddRepairProjectView: View {
             }
         }
     }
-    
+
     private func addProject() {
         let isSharedHome = home.map {
             cloudSharingService.isInSharedStore(entityName: "Home", id: $0.id)
@@ -115,9 +115,9 @@ struct AddRepairProjectView: View {
                 obj.setValue(UUID(), forKey: "id")
                 obj.setValue(title, forKey: "title")
                 obj.setValue(description, forKey: "projectDescription")
-                obj.setValue(category.rawValue, forKey: "category")
-                obj.setValue(status.rawValue, forKey: "status")
-                obj.setValue(priority.rawValue, forKey: "priority")
+                obj.setValue(category.rawValue, forKey: "categoryRaw")
+                obj.setValue(status.rawValue, forKey: "statusRaw")
+                obj.setValue(Int32(priority.rawValue), forKey: "priorityRaw")
                 obj.setValue(notes, forKey: "notes")
                 obj.setValue(Date(), forKey: "createdAt")
                 obj.setValue(homeIDStr, forKey: "homeIDString")
@@ -147,9 +147,9 @@ struct AddRepairProjectView: View {
                 obj.setValue(UUID(), forKey: "id")
                 obj.setValue(title, forKey: "title")
                 obj.setValue(description, forKey: "projectDescription")
-                obj.setValue(category.rawValue, forKey: "category")
-                obj.setValue(status.rawValue, forKey: "status")
-                obj.setValue(priority.rawValue, forKey: "priority")
+                obj.setValue(category.rawValue, forKey: "categoryRaw")
+                obj.setValue(status.rawValue, forKey: "statusRaw")
+                obj.setValue(Int32(priority.rawValue), forKey: "priorityRaw")
                 obj.setValue(notes, forKey: "notes")
                 obj.setValue(Date(), forKey: "createdAt")
                 obj.setValue(homeIDStr, forKey: "homeIDString")
@@ -172,11 +172,12 @@ struct AddRepairProjectView: View {
     }
 
     private func addProjectToPrivateStore() {
-        let project = RepairProject(
+        let project = RepairProject.make(
             title: title,
             description: description,
             category: category,
-            priority: priority
+            priority: priority,
+            in: viewContext
         )
         project.status = status
         project.notes = notes
@@ -184,16 +185,12 @@ struct AddRepairProjectView: View {
             project.home = home
         }
         project.homeIDString = home?.id.uuidString
-        modelContext.insert(project)
         for draft in productDrafts where !draft.isEmpty {
-            let product = ProductLink(name: draft.name, urlString: draft.urlString, imageData: draft.imageData)
+            let product = ProductLink.make(name: draft.name, urlString: draft.urlString, imageData: draft.imageData, in: viewContext)
             product.project = project
-            modelContext.insert(product)
         }
+        try? viewContext.save()
     }
 }
 
-#Preview {
-    AddRepairProjectView()
-        .modelContainer(for: RepairProject.self, inMemory: true)
-}
+#Preview { Text("Preview unavailable") }

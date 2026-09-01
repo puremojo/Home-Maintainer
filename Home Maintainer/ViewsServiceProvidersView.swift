@@ -6,7 +6,7 @@
 //
 
 import SwiftUI
-import SwiftData
+import CoreData
 
 // MARK: - Sort Mode
 
@@ -28,10 +28,10 @@ struct ServiceProvidersView: View {
 // MARK: - Content
 
 struct ServiceProvidersContent: View {
-    @Environment(\.modelContext) private var modelContext
+    @Environment(\.managedObjectContext) private var viewContext
     @Environment(HomeManager.self) private var homeManager
     @Environment(LocationManager.self) private var locationManager
-    @Query(sort: \ServiceProvider.name) private var allProviders: [ServiceProvider]
+    @FetchRequest(sortDescriptors: [SortDescriptor(\.name)]) private var allProviders: FetchedResults<ServiceProvider>
 
     @State private var showingAddProvider = false
     @State private var showingHomePicker = false
@@ -210,8 +210,9 @@ struct ServiceProvidersContent: View {
 
     private func deleteProviders(at offsets: IndexSet, from list: [ServiceProvider]) {
         for index in offsets {
-            modelContext.delete(list[index])
+            viewContext.delete(list[index])
         }
+        try? viewContext.save()
     }
 }
 
@@ -249,12 +250,12 @@ struct ServiceProviderRow: View {
                                         .foregroundStyle(.yellow)
                                 }
                             }
-                            if let rating = provider.googleRating {
+                            if provider.googleRating > 0 {
                                 HStack(spacing: 2) {
                                     Image(systemName: "star.fill")
                                         .font(.caption2)
                                         .foregroundStyle(.yellow)
-                                    Text(String(format: "%.1f", rating))
+                                    Text(String(format: "%.1f", provider.googleRating))
                                         .font(.caption)
                                         .foregroundStyle(.secondary)
                                 }
@@ -277,10 +278,4 @@ struct ServiceProviderRow: View {
     }
 }
 
-#Preview {
-    ServiceProvidersView()
-        .environment(LocationManager())
-        .environment(LocalBusinessSearchService())
-        .environment(HomeManager())
-        .modelContainer(for: ServiceProvider.self, inMemory: true)
-}
+#Preview { Text("Preview unavailable") }
