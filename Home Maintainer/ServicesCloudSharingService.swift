@@ -45,6 +45,7 @@ final class CloudSharingService {
     private(set) var lastTaskAddPath: String = "—"
     private var eventObserver: NSObjectProtocol?
     private var foregroundObserver: NSObjectProtocol?
+    private var remoteChangeObserver: NSObjectProtocol?
     /// Saved when acceptShare is called before the shared store is ready (recovery path).
     private var pendingShareMetadata: CKShare.Metadata?
     /// Prevents infinite retry if the fresh store still fails to accept.
@@ -149,11 +150,26 @@ final class CloudSharingService {
             self.persistentCloudKitContainer?.viewContext.refreshAllObjects()
             self.sharedStoreVersion += 1
         }
+
+        // NSPersistentStoreRemoteChangeNotification fires immediately whenever the
+        // underlying SQLite file changes — including on CloudKit imports that arrive
+        // while the app is in the foreground.  This is what makes the list update
+        // automatically without requiring a background/foreground cycle.
+        remoteChangeObserver = NotificationCenter.default.addObserver(
+            forName: .NSPersistentStoreRemoteChange,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            guard let self, self.sharedStoreIsReady else { return }
+            self.persistentCloudKitContainer?.viewContext.refreshAllObjects()
+            self.sharedStoreVersion += 1
+        }
     }
 
     deinit {
         if let observer = eventObserver { NotificationCenter.default.removeObserver(observer) }
         if let observer = foregroundObserver { NotificationCenter.default.removeObserver(observer) }
+        if let observer = remoteChangeObserver { NotificationCenter.default.removeObserver(observer) }
     }
 
     // MARK: - Store URL
