@@ -11,7 +11,6 @@ import CoreData
 struct AddServiceProviderView: View {
     @Environment(\.managedObjectContext) private var viewContext
     @Environment(\.dismiss) private var dismiss
-    @Environment(CloudSharingService.self) private var cloudSharingService
 
     let home: Home?
 
@@ -61,16 +60,11 @@ struct AddServiceProviderView: View {
                         ForEach(1...5, id: \.self) { star in
                             Image(systemName: star <= rating ? "star.fill" : "star")
                                 .foregroundStyle(.yellow)
-                                .onTapGesture {
-                                    rating = star
-                                }
+                                .onTapGesture { rating = star }
                         }
                         if rating > 0 {
-                            Button {
-                                rating = 0
-                            } label: {
-                                Image(systemName: "xmark.circle.fill")
-                                    .foregroundStyle(.gray)
+                            Button { rating = 0 } label: {
+                                Image(systemName: "xmark.circle.fill").foregroundStyle(.gray)
                             }
                             .buttonStyle(.plain)
                         }
@@ -90,90 +84,17 @@ struct AddServiceProviderView: View {
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
-                    Button("Cancel") {
-                        dismiss()
-                    }
+                    Button("Cancel") { dismiss() }
                 }
-
                 ToolbarItem(placement: .confirmationAction) {
-                    Button("Add") {
-                        addProvider()
-                    }
-                    .disabled(name.isEmpty)
+                    Button("Add") { addProvider() }
+                        .disabled(name.isEmpty)
                 }
             }
         }
     }
 
     private func addProvider() {
-        let isSharedHome = home.map {
-            cloudSharingService.isInSharedStore(entityName: "Home", id: $0.id)
-        } ?? false
-        let isOwnedSharedHome = !isSharedHome && (home.map {
-            cloudSharingService.isOwnedAndShared(homeID: $0.id)
-        } ?? false)
-
-        if isSharedHome, let home {
-            addProviderToSharedStore(home: home)
-        } else if isOwnedSharedHome, let home {
-            addProviderToOwnedSharedStore(home: home)
-        } else {
-            addProviderToPrivateStore()
-        }
-        dismiss()
-    }
-
-    private func addProviderToSharedStore(home: Home) {
-        let homeIDStr = home.id.uuidString
-        do {
-            let homeObj = cloudSharingService.findHomeManagedObject(id: home.id)
-            try cloudSharingService.insertIntoSharedStore(entityName: "ServiceProvider") { obj in
-                obj.setValue(UUID(), forKey: "id")
-                obj.setValue(name, forKey: "name")
-                obj.setValue(category.rawValue, forKey: "categoryRaw")
-                obj.setValue(phoneNumber, forKey: "phoneNumber")
-                obj.setValue(email, forKey: "email")
-                obj.setValue(address, forKey: "address")
-                obj.setValue(website, forKey: "website")
-                obj.setValue(notes, forKey: "notes")
-                obj.setValue(isFavorite, forKey: "isFavorite")
-                obj.setValue(Int32(rating), forKey: "rating")
-                obj.setValue(Date(), forKey: "createdAt")
-                obj.setValue(homeIDStr, forKey: "homeIDString")
-                obj.setValue(homeObj, forKey: "home")
-            }
-            try cloudSharingService.saveSharedContext()
-        } catch {
-            print("[AddServiceProvider] Shared store insert failed: \(error)")
-        }
-    }
-
-    private func addProviderToOwnedSharedStore(home: Home) {
-        let homeIDStr = home.id.uuidString
-        do {
-            let homeObj = cloudSharingService.findHomeManagedObject(id: home.id)
-            try cloudSharingService.insertLinkedToHome(entityName: "ServiceProvider") { obj in
-                obj.setValue(UUID(), forKey: "id")
-                obj.setValue(name, forKey: "name")
-                obj.setValue(category.rawValue, forKey: "categoryRaw")
-                obj.setValue(phoneNumber, forKey: "phoneNumber")
-                obj.setValue(email, forKey: "email")
-                obj.setValue(address, forKey: "address")
-                obj.setValue(website, forKey: "website")
-                obj.setValue(notes, forKey: "notes")
-                obj.setValue(isFavorite, forKey: "isFavorite")
-                obj.setValue(Int32(rating), forKey: "rating")
-                obj.setValue(Date(), forKey: "createdAt")
-                obj.setValue(homeIDStr, forKey: "homeIDString")
-                obj.setValue(homeObj, forKey: "home")
-            }
-            try cloudSharingService.saveSharedContext()
-        } catch {
-            NSLog("[AddServiceProvider] Owner-shared insert failed: \(error)")
-        }
-    }
-
-    private func addProviderToPrivateStore() {
         let provider = ServiceProvider.make(
             name: name,
             category: category,
@@ -186,11 +107,10 @@ struct AddServiceProviderView: View {
         provider.notes = notes
         provider.isFavorite = isFavorite
         provider.rating = Int32(rating)
-        if let home, !cloudSharingService.isInSharedStore(entityName: "Home", id: home.id) {
-            provider.home = home
-        }
+        provider.home = home
         provider.homeIDString = home?.id.uuidString
         try? viewContext.save()
+        dismiss()
     }
 }
 

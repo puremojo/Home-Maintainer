@@ -338,9 +338,7 @@ struct GooglePlaceRow: View {
         provider.googlePriceLevel = place.priceLevel
         provider.weekdayHours = place.weekdayDescriptions
         provider.businessTypes = place.types.isEmpty ? nil : place.types
-        if let home, !cloudSharingService.isInSharedStore(entityName: "Home", id: home.id) {
-            provider.home = home
-        }
+        provider.home = home
         provider.homeIDString = home?.id.uuidString
         try? viewContext.save()
     }

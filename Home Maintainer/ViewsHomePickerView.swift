@@ -206,9 +206,8 @@ struct HomePickerView: View {
             viewContext.delete(home)
             try? viewContext.save()
         } else {
-            // Shared homes must be removed at the CloudKit zone level, not via
-            // CoreData delete — the cascade would try to fault shared-store
-            // relationships through ModelContext.fulfill and crash.
+            // Participant leaving: remove the local CoreData records and the stored
+            // shared zone ID so writes no longer route to that shared database.
             cloudSharingService.removeSharedHome(home)
         }
     }

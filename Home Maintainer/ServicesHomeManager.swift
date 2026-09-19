@@ -36,21 +36,10 @@ final class HomeManager {
 
     // MARK: - Owner detection
 
-    /// Returns true if the current user owns this home. A home in the CloudKit shared store
-    /// was created by someone else and shared to this device; a home in the private store
-    /// belongs to this user.
+    /// Returns true when this device is the owner of the home (not a participant via share).
     func isCurrentUserOwner(of home: Home) -> Bool {
-        guard let service = CloudSharingService.shared,
-              let sharedStore = service.sharedPersistentStore,
-              let container = service.persistentCloudKitContainer else {
-            return home.isLocallyCreated
-        }
-        let request = NSFetchRequest<NSManagedObject>(entityName: "Home")
-        request.predicate = NSPredicate(format: "id == %@", home.id as NSUUID)
-        request.fetchLimit = 1
-        request.affectedStores = [sharedStore]
-        let inSharedStore = (try? container.viewContext.fetch(request).first) != nil
-        return !inSharedStore
+        guard let service = CloudSharingService.shared else { return home.isLocallyCreated }
+        return !service.isParticipant(in: home)
     }
 
     // MARK: - File-open import coordination

@@ -166,6 +166,8 @@ enum AppDataModel {
             dateAttr("completedDate"),
             strAttr("notes"),
             strAttr("action", defaultValue: "Closed"),
+            strAttr("taskIDString", optional: true),
+            strAttr("homeIDString", optional: true),
         ]
 
         applianceEnt.properties = [

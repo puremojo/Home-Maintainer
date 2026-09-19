@@ -11,7 +11,6 @@ import CoreData
 struct AddMaintenanceTaskView: View {
     @Environment(\.managedObjectContext) private var viewContext
     @Environment(\.dismiss) private var dismiss
-    @Environment(CloudSharingService.self) private var cloudSharingService
     @FetchRequest(sortDescriptors: [SortDescriptor(\.name)]) private var appliances: FetchedResults<Appliance>
 
     let home: Home?
@@ -77,110 +76,17 @@ struct AddMaintenanceTaskView: View {
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
-                    Button("Cancel") {
-                        dismiss()
-                    }
+                    Button("Cancel") { dismiss() }
                 }
-
                 ToolbarItem(placement: .confirmationAction) {
-                    Button("Add") {
-                        addTask()
-                    }
-                    .disabled(name.isEmpty)
+                    Button("Add") { addTask() }
+                        .disabled(name.isEmpty)
                 }
             }
         }
     }
 
     private func addTask() {
-        let isSharedHome = home.map {
-            cloudSharingService.isInSharedStore(entityName: "Home", id: $0.id)
-        } ?? false
-
-        if isSharedHome, let home {
-            addTaskToSharedStore(home: home)
-        } else if let home {
-            addTaskToOwnedSharedStore(home: home)
-        } else {
-            addTaskToPrivateStore()
-        }
-        dismiss()
-    }
-
-    private func addTaskToSharedStore(home: Home) {
-        let freq = selectedFrequency
-        let homeIDStr = home.id.uuidString
-        do {
-            let homeObj = cloudSharingService.findHomeManagedObject(id: home.id)
-            NSLog("[AddMaintenanceTask] SHARED path — homeID=\(homeIDStr) homeObjFound=\(homeObj != nil)")
-            let taskObj = try cloudSharingService.insertIntoSharedStore(entityName: "MaintenanceTask") { obj in
-                let taskID = UUID()
-                obj.setValue(taskID, forKey: "id")
-                obj.setValue(name, forKey: "name")
-                obj.setValue(description, forKey: "taskDescription")
-                obj.setValue(room, forKey: "room")
-                obj.setValue(freq.encoded, forKey: "frequencyEncoded")
-                obj.setValue(true, forKey: "isActive")
-                obj.setValue(Date(), forKey: "createdAt")
-                obj.setValue(freq.nextDue(from: Date()), forKey: "nextDue")
-                obj.setValue(homeIDStr, forKey: "homeIDString")
-                obj.setValue(homeObj, forKey: "home")
-                NSLog("[AddMaintenanceTask] SHARED insert — task '\(name)' id=\(taskID) homeIDString=\(homeIDStr)")
-            }
-            var allObjects: [NSManagedObject] = [taskObj]
-            for draft in productDrafts where !draft.isEmpty {
-                let linkObj = try cloudSharingService.insertIntoSharedStore(entityName: "ProductLink") { obj in
-                    obj.setValue(UUID(), forKey: "id")
-                    obj.setValue(draft.name, forKey: "name")
-                    obj.setValue(draft.urlString, forKey: "urlString")
-                    obj.setValue(draft.imageData, forKey: "imageData")
-                    obj.setValue(Date(), forKey: "createdAt")
-                    obj.setValue(taskObj, forKey: "task")
-                }
-                allObjects.append(linkObj)
-            }
-            cloudSharingService.addObjectsToHomeShare(objects: allObjects, homeID: home.id)
-        } catch {
-            NSLog("[AddMaintenanceTask] Shared store insert failed: \(error)")
-        }
-    }
-
-    private func addTaskToOwnedSharedStore(home: Home) {
-        let freq = selectedFrequency
-        let homeIDStr = home.id.uuidString
-        do {
-            let taskObj = try cloudSharingService.insertLinkedToHome(entityName: "MaintenanceTask") { obj in
-                let taskID = UUID()
-                obj.setValue(taskID, forKey: "id")
-                obj.setValue(name, forKey: "name")
-                obj.setValue(description, forKey: "taskDescription")
-                obj.setValue(room, forKey: "room")
-                obj.setValue(freq.encoded, forKey: "frequencyEncoded")
-                obj.setValue(true, forKey: "isActive")
-                obj.setValue(Date(), forKey: "createdAt")
-                obj.setValue(freq.nextDue(from: Date()), forKey: "nextDue")
-                obj.setValue(homeIDStr, forKey: "homeIDString")
-                NSLog("[AddMaintenanceTask] OWNER-SHARED insert — task '\(name)' id=\(taskID) homeIDString=\(homeIDStr)")
-            }
-            var allObjects: [NSManagedObject] = [taskObj]
-            for draft in productDrafts where !draft.isEmpty {
-                let linkObj = try cloudSharingService.insertLinkedToHome(entityName: "ProductLink") { obj in
-                    obj.setValue(UUID(), forKey: "id")
-                    obj.setValue(draft.name, forKey: "name")
-                    obj.setValue(draft.urlString, forKey: "urlString")
-                    obj.setValue(draft.imageData, forKey: "imageData")
-                    obj.setValue(Date(), forKey: "createdAt")
-                    obj.setValue(taskObj, forKey: "task")
-                }
-                allObjects.append(linkObj)
-            }
-            cloudSharingService.addObjectsToOwnerShare(objects: allObjects, homeID: home.id)
-        } catch {
-            NSLog("[AddMaintenanceTask] Owner-shared insert failed: \(error)")
-        }
-    }
-
-    private func addTaskToPrivateStore() {
         let task = MaintenanceTask.make(
             name: name,
             description: description,
@@ -189,22 +95,19 @@ struct AddMaintenanceTaskView: View {
             appliance: selectedAppliance,
             in: viewContext
         )
-        if let home, !cloudSharingService.isInSharedStore(entityName: "Home", id: home.id) {
-            task.home = home
-        }
+        task.home = home
         task.homeIDString = home?.id.uuidString
-        NSLog("[AddMaintenanceTask] PRIVATE path — task '\(task.name)' id=\(task.id) homeIDString=\(task.homeIDString ?? "nil") homeRelSet=\(task.home != nil)")
 
         for draft in productDrafts where !draft.isEmpty {
-            let product = ProductLink.make(name: draft.name, urlString: draft.urlString, imageData: draft.imageData, in: viewContext)
+            let product = ProductLink.make(name: draft.name, urlString: draft.urlString,
+                                           imageData: draft.imageData, in: viewContext)
             product.task = task
         }
 
         try? viewContext.save()
 
-        Task {
-            await CalendarService.shared.addTaskEvent(task: task)
-        }
+        Task { await CalendarService.shared.addTaskEvent(task: task) }
+        dismiss()
     }
 }
 
@@ -217,5 +120,4 @@ struct AddMaintenanceTaskView: View {
     container.loadPersistentStores { _, _ in }
     return AddMaintenanceTaskView()
         .environment(\.managedObjectContext, container.viewContext)
-        .environment(CloudSharingService(container: NSPersistentCloudKitContainer(name: "preview", managedObjectModel: model)))
 }

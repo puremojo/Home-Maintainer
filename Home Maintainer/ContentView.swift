@@ -147,10 +147,8 @@ struct ContentView: View {
     /// One-time backfill of scalar homeIDString attributes from relationships.
     private func fixupHomeIDStrings() {
         guard !homeIDStringMigrationDone else { return }
-        guard let container = cloudSharingService.persistentCloudKitContainer else { return }
 
-        let ctx = container.viewContext
-        let sharedStore = cloudSharingService.sharedPersistentStore
+        let ctx = cloudSharingService.viewContext
         var changed = false
 
         let homeEntities = [
@@ -166,7 +164,6 @@ struct ContentView: View {
             let request = NSFetchRequest<NSManagedObject>(entityName: entityName)
             guard let objects = try? ctx.fetch(request) else { continue }
             for obj in objects {
-                if let sharedStore, obj.objectID.persistentStore === sharedStore { continue }
                 if let existing = obj.value(forKey: key) as? String, !existing.isEmpty { continue }
                 if let homeObj = obj.value(forKey: "home") as? NSManagedObject,
                    let homeID = homeObj.value(forKey: "id") as? UUID {
@@ -179,7 +176,6 @@ struct ContentView: View {
         let taskRequest = NSFetchRequest<NSManagedObject>(entityName: "MaintenanceTask")
         if let tasks = try? ctx.fetch(taskRequest) {
             for task in tasks {
-                if let sharedStore, task.objectID.persistentStore === sharedStore { continue }
                 if let existing = task.value(forKey: "sourceProjectIDString") as? String, !existing.isEmpty { continue }
                 if let projObj = task.value(forKey: "sourceProject") as? NSManagedObject,
                    let projID = projObj.value(forKey: "id") as? UUID {
@@ -196,10 +192,8 @@ struct ContentView: View {
     /// One-time backfill of sectionIDString on HomeDocument from the section relationship.
     private func fixupSectionIDStrings() {
         guard !sectionIDStringMigrationDone else { return }
-        guard let container = cloudSharingService.persistentCloudKitContainer else { return }
 
-        let ctx = container.viewContext
-        let sharedStore = cloudSharingService.sharedPersistentStore
+        let ctx = cloudSharingService.viewContext
         let request = NSFetchRequest<NSManagedObject>(entityName: "HomeDocument")
         guard let docs = try? ctx.fetch(request) else {
             sectionIDStringMigrationDone = true
@@ -208,7 +202,6 @@ struct ContentView: View {
 
         var changed = false
         for doc in docs {
-            if let sharedStore, doc.objectID.persistentStore === sharedStore { continue }
             if let existing = doc.value(forKey: "sectionIDString") as? String, !existing.isEmpty { continue }
             if let sectionObj = doc.value(forKey: "section") as? NSManagedObject,
                let sectionID = sectionObj.value(forKey: "id") as? UUID {

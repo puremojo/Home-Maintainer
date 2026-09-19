@@ -3,10 +3,11 @@
 //  ServicesCloudSharingService.swift
 //  Home Maintainer
 //
-//  Manages CloudKit zone sharing for Home objects via NSPersistentCloudKitContainer.
-//  Both the private and shared stores are configured at init time — this is the
-//  critical detail that makes NSPersistentCloudKitContainer register push-driven
-//  subscriptions for BOTH stores (eliminating the old 30-minute polling fallback).
+//  Direct CloudKit sync engine.  Replaces NSPersistentCloudKitContainer with a plain
+//  NSPersistentContainer (single SQLite store) plus hand-rolled CKFetchDatabaseChanges /
+//  CKModifyRecords operations.  This gives us live foreground sync: when a remote push
+//  arrives, we run a fetch immediately rather than waiting for an OS-managed background
+//  import window.
 //
 
 import Foundation
@@ -16,706 +17,702 @@ import CloudKit
 import UIKit
 
 @Observable
-final class CloudSharingService {
+final class CloudSharingService: @unchecked Sendable {
 
-    // MARK: - Shared singleton (set at app startup so SceneDelegate can reach it)
+    // MARK: - Shared singleton
     static var shared: CloudSharingService?
 
-    // MARK: - State
+    // MARK: - State (observed by views)
 
-    private(set) var persistentCloudKitContainer: NSPersistentCloudKitContainer?
-    /// True after CloudKit completes a successful setup or export.
-    private(set) var isCloudKitReady = false
-    /// The shared-database persistent store.
-    private(set) var sharedPersistentStore: NSPersistentStore?
-    /// True once the shared store is loaded and ready to accept shares.
-    private(set) var sharedStoreIsReady = false
-    /// Incremented whenever shared-store data changes (local save or CloudKit import).
-    /// Views use this to force @FetchRequest recreation.
+    /// Incremented after every successful CloudKit import so views can react.
     private(set) var sharedStoreVersion: Int = 0
-    /// Non-nil when share acceptance fails. ContentView observes this to show an alert.
+    /// Non-nil when share acceptance fails.
     var shareAcceptError: String?
-    /// Last export event result per store.
-    private(set) var privateExportStatus: String = "—"
-    private(set) var sharedExportStatus: String = "—"
-    /// Last import event result per store.
-    private(set) var privateImportStatus: String = "—"
-    private(set) var sharedImportStatus: String = "—"
-    /// Routing path taken for the most recent task add.
-    private(set) var lastTaskAddPath: String = "—"
-    private var eventObserver: NSObjectProtocol?
-    private var foregroundObserver: NSObjectProtocol?
-    private var remoteChangeObserver: NSObjectProtocol?
-    /// Merges any non-viewContext save (e.g., CloudKit import context) into viewContext
-    /// so @FetchRequest sees new objects immediately.
+
+    // MARK: - Private
+
+    let persistentContainer: NSPersistentContainer
+    private let ckContainer = CKContainer(identifier: "iCloud.EstraDOS.Home-Maintainer")
     private var contextSaveObserver: NSObjectProtocol?
-/// Saved when acceptShare is called before the shared store is ready (recovery path).
-    private var pendingShareMetadata: CKShare.Metadata?
-    /// Prevents infinite retry if the fresh store still fails to accept.
-    private var hasAttemptedStoreRecovery = false
-    private var lastRecoveryPath = ""
+    // Set true while importing CloudKit records into viewContext to suppress the
+    // outbound-upload observer (prevents echo-looping imported records back to CloudKit).
+    private var isImportingFromCloudKit = false
+
+    // Entities that participate in CloudKit sync.
+    private static let syncedEntityNames: Set<String> = [
+        "Home", "MaintenanceTask", "MaintenanceRecord",
+        "Appliance", "ServiceProvider", "RepairProject",
+        "DocumentSection", "HomeDocument"
+    ]
 
     // MARK: - Convenience accessor
 
-    var viewContext: NSManagedObjectContext {
-        persistentCloudKitContainer!.viewContext
-    }
+    var viewContext: NSManagedObjectContext { persistentContainer.viewContext }
 
     // MARK: - Init
 
-    init(container: NSPersistentCloudKitContainer) {
-        persistentCloudKitContainer = container
+    init(container: NSPersistentContainer) {
+        self.persistentContainer = container
+        setupContextSaveObserver()
+        Task { await setupSubscriptionsIfNeeded() }
+    }
 
-        // Locate the shared store by URL.
-        let sharedURL = Self.makeSharedStoreURL()
-        sharedPersistentStore = container.persistentStoreCoordinator.persistentStores
-            .first(where: { $0.url == sharedURL })
-        sharedStoreIsReady = sharedPersistentStore != nil
+    // MARK: - Container factory
 
-        // Observe CloudKit sync events for diagnostic status and context refresh.
-        // Container capture is no longer needed here — we receive it in init().
-        eventObserver = NotificationCenter.default.addObserver(
-            forName: NSPersistentCloudKitContainer.eventChangedNotification,
-            object: nil,
-            queue: .main
+    static func makeContainer() -> NSPersistentContainer {
+        let model = AppDataModel.buildModel()
+        let container = NSPersistentContainer(name: "HomeMaintainer", managedObjectModel: model)
+        let baseURL = NSPersistentContainer.defaultDirectoryURL()
+
+        // Migration: delete the old two-store shared SQLite file (no longer used).
+        let sharedURL = baseURL.appendingPathComponent("HomeMaintainerShared.sqlite")
+        if FileManager.default.fileExists(atPath: sharedURL.path) {
+            try? FileManager.default.removeItem(at: sharedURL)
+            try? FileManager.default.removeItem(at: URL(fileURLWithPath: sharedURL.path + "-wal"))
+            try? FileManager.default.removeItem(at: URL(fileURLWithPath: sharedURL.path + "-shm"))
+            NSLog("[CloudSharingService] Deleted old shared store")
+        }
+
+        let privateURL = baseURL.appendingPathComponent("HomeMaintainer.sqlite")
+
+        // Pre-flight probe: attempt lightweight migration first; only destroy if truly unreadable.
+        // Using migration options here means adding optional attributes (model evolution) won't
+        // trigger a destroy — only a binary-incompatible store will.
+        if FileManager.default.fileExists(atPath: privateURL.path) {
+            let probe = NSPersistentStoreCoordinator(managedObjectModel: model)
+            let migrateOptions: [String: Any] = [
+                NSMigratePersistentStoresAutomaticallyOption: true,
+                NSInferMappingModelAutomaticallyOption: true
+            ]
+            if (try? probe.addPersistentStore(ofType: NSSQLiteStoreType, configurationName: nil,
+                                              at: privateURL,
+                                              options: migrateOptions)) == nil {
+                NSLog("⚠️ Destroying incompatible CoreData store: \(privateURL.lastPathComponent)")
+                try? probe.destroyPersistentStore(at: privateURL, ofType: NSSQLiteStoreType, options: nil)
+            }
+        }
+
+        let desc = NSPersistentStoreDescription(url: privateURL)
+        desc.setOption(true as NSNumber, forKey: NSMigratePersistentStoresAutomaticallyOption)
+        desc.setOption(true as NSNumber, forKey: NSInferMappingModelAutomaticallyOption)
+        container.persistentStoreDescriptions = [desc]
+
+        UserDefaults.standard.removeObject(forKey: "debug_coredata_error")
+        container.loadPersistentStores { _, error in
+            if let error {
+                NSLog("❌ CoreData load error: \(error)")
+                UserDefaults.standard.set(error.localizedDescription, forKey: "debug_coredata_error")
+            }
+        }
+
+        container.viewContext.automaticallyMergesChangesFromParent = true
+        container.viewContext.mergePolicy = NSMergeByPropertyObjectTrumpMergePolicy
+        return container
+    }
+
+    // MARK: - Outgoing sync (viewContext save → CloudKit upload)
+
+    private func setupContextSaveObserver() {
+        contextSaveObserver = NotificationCenter.default.addObserver(
+            forName: .NSManagedObjectContextDidSave,
+            object: persistentContainer.viewContext,
+            queue: nil
         ) { [weak self] notification in
             guard let self else { return }
+            Task { await self.handleViewContextSave(notification) }
+        }
+    }
 
-            guard let event = notification.userInfo?[NSPersistentCloudKitContainer.eventNotificationUserInfoKey]
-                    as? NSPersistentCloudKitContainer.Event else { return }
+    private func handleViewContextSave(_ notification: Notification) async {
+        // Suppress uploads while we're importing records from CloudKit to avoid echo loops.
+        guard !isImportingFromCloudKit else { return }
 
-            // Ignore start events (endDate == nil).
-            guard event.endDate != nil else { return }
+        let inserted = (notification.userInfo?[NSInsertedObjectsKey] as? Set<NSManagedObject> ?? [])
+            .filter { Self.syncedEntityNames.contains($0.entity.name ?? "") }
+        let updated = (notification.userInfo?[NSUpdatedObjectsKey] as? Set<NSManagedObject> ?? [])
+            .filter { Self.syncedEntityNames.contains($0.entity.name ?? "") }
+        let deleted = (notification.userInfo?[NSDeletedObjectsKey] as? Set<NSManagedObject> ?? [])
+            .filter { Self.syncedEntityNames.contains($0.entity.name ?? "") }
 
-            let storeID = event.storeIdentifier
-            let isSharedStoreEvent: Bool
-            if let sharedStore = self.sharedPersistentStore,
-               let container = self.persistentCloudKitContainer,
-               let matchedStore = container.persistentStoreCoordinator.persistentStores
-                   .first(where: { $0.identifier == storeID }) {
-                isSharedStoreEvent = matchedStore === sharedStore
-            } else {
-                isSharedStoreEvent = storeID.contains("Shared") || storeID.contains("shared")
+        guard !inserted.isEmpty || !updated.isEmpty || !deleted.isEmpty else { return }
+
+        // Create CloudKit zones for any newly inserted Home objects.
+        for obj in inserted where obj.entity.name == "Home" {
+            if let homeID = obj.value(forKey: "id") as? UUID {
+                await createZoneIfNeeded(homeID: homeID)
+            }
+        }
+
+        await uploadObjects(Array(inserted) + Array(updated))
+
+        for obj in deleted {
+            if let id = obj.value(forKey: "id") as? UUID,
+               let (zoneID, db) = cloudKitContext(forObject: obj) {
+                await deleteRecord(id: id, zoneID: zoneID, in: db)
+            }
+        }
+    }
+
+    // MARK: - Incoming sync (push → fetch → CoreData upsert)
+
+    /// Call from AppDelegate.didReceiveRemoteNotification.
+    func handleRemoteNotification() async {
+        await withTaskGroup(of: Void.self) { group in
+            group.addTask { await self.fetchDatabaseChanges(in: self.ckContainer.privateCloudDatabase,
+                                                            tokenKey: TokenKey.privateDB) }
+            group.addTask { await self.fetchDatabaseChanges(in: self.ckContainer.sharedCloudDatabase,
+                                                            tokenKey: TokenKey.sharedDB) }
+        }
+    }
+
+    private func fetchDatabaseChanges(in database: CKDatabase, tokenKey: String) async {
+        var changedZones: [CKRecordZone.ID] = []
+        var deletedZones: [CKRecordZone.ID] = []
+
+        let op = CKFetchDatabaseChangesOperation(previousServerChangeToken: loadToken(key: tokenKey))
+        op.recordZoneWithIDChangedBlock  = { changedZones.append($0) }
+        op.recordZoneWithIDWasDeletedBlock = { deletedZones.append($0) }
+        op.fetchDatabaseChangesResultBlock = { [weak self] result in
+            if case .success(let (token, _)) = result { self?.saveToken(token, key: tokenKey) }
+        }
+        await withCheckedContinuation { cont in
+            op.completionBlock = { cont.resume() }
+            database.add(op)
+        }
+
+        if !changedZones.isEmpty {
+            await fetchZoneChanges(zoneIDs: changedZones, in: database)
+        }
+        for zoneID in deletedZones {
+            await deleteAllLocalRecords(in: zoneID)
+        }
+    }
+
+    private func fetchZoneChanges(zoneIDs: [CKRecordZone.ID], in database: CKDatabase) async {
+        var configs: [CKRecordZone.ID: CKFetchRecordZoneChangesOperation.ZoneConfiguration] = [:]
+        for id in zoneIDs {
+            let cfg = CKFetchRecordZoneChangesOperation.ZoneConfiguration()
+            cfg.previousServerChangeToken = loadToken(key: TokenKey.zone(id))
+            configs[id] = cfg
+        }
+
+        var toUpsert: [CKRecord] = []
+        var toDelete: [CKRecord.ID] = []
+        var newTokens: [CKRecordZone.ID: CKServerChangeToken] = [:]
+
+        let op = CKFetchRecordZoneChangesOperation(recordZoneIDs: zoneIDs,
+                                                    configurationsByRecordZoneID: configs)
+        op.recordWasChangedBlock       = { _, result in if case .success(let r) = result { toUpsert.append(r) } }
+        op.recordWithIDWasDeletedBlock = { id, _ in toDelete.append(id) }
+        op.recordZoneFetchResultBlock  = { zoneID, result in
+            switch result {
+            case .success(let (token, _, _)):
+                NSLog("[CK] fetchZoneChanges zone=\(zoneID.zoneName) owner=\(zoneID.ownerName) — OK")
+                newTokens[zoneID] = token
+            case .failure(let error):
+                NSLog("[CK] fetchZoneChanges zone=\(zoneID.zoneName) owner=\(zoneID.ownerName) — FAILED: \(error)")
+            }
+        }
+        await withCheckedContinuation { cont in
+            op.completionBlock = { cont.resume() }
+            database.add(op)
+        }
+
+        for (zoneID, token) in newTokens { saveToken(token, key: TokenKey.zone(zoneID)) }
+
+        if !toUpsert.isEmpty || !toDelete.isEmpty {
+            await applyImportedChanges(upsert: toUpsert, delete: toDelete)
+        }
+    }
+
+    // MARK: - CoreData upsert from CKRecords
+
+    private func applyImportedChanges(upsert: [CKRecord], delete: [CKRecord.ID]) async {
+        NSLog("[applyImportedChanges] \(upsert.count) upserts, \(delete.count) deletes — types: \(upsert.map { $0.recordType })")
+
+        // Import directly into viewContext so changes are immediately visible to @FetchRequest
+        // without depending on the bgCtx→viewContext merge path, which can silently fail when
+        // the background context is a sibling (not a parent) of viewContext.
+        let ctx = persistentContainer.viewContext
+
+        isImportingFromCloudKit = true
+        await ctx.perform {
+            for record in upsert {
+                guard Self.syncedEntityNames.contains(record.recordType),
+                      let idStr = record["id"] as? String, let id = UUID(uuidString: idStr) else {
+                    continue
+                }
+
+                let fetch = NSFetchRequest<NSManagedObject>(entityName: record.recordType)
+                fetch.predicate = NSPredicate(format: "id == %@", id as NSUUID)
+                fetch.fetchLimit = 1
+                let obj = (try? ctx.fetch(fetch).first)
+                    ?? NSEntityDescription.insertNewObject(forEntityName: record.recordType, into: ctx)
+
+                for (key, attr) in obj.entity.attributesByName {
+                    if let raw = record[key] {
+                        obj.setValue(Self.coreDataValue(raw, for: attr), forKey: key)
+                    } else if attr.isOptional {
+                        obj.setValue(nil, forKey: key)
+                    }
+                }
+
+                self.restoreRelationships(obj: obj, record: record, in: ctx)
             }
 
-            NSLog("[CloudSharingService] CloudKit event — type=%d storeID=%@ isShared=%@",
-                  event.type.rawValue, storeID, isSharedStoreEvent ? "YES" : "NO")
-
-            let status: String
-            if event.succeeded {
-                status = "ok"
-            } else {
-                let raw = event.error?.localizedDescription ?? "err"
-                status = "FAIL:\(raw.prefix(40))"
-                NSLog("[CloudSharingService] CloudKit event FAILED — type=%d store=%@ error=%@",
-                      event.type.rawValue, storeID, raw)
+            for recordID in delete {
+                guard let id = UUID(uuidString: recordID.recordName) else { continue }
+                for entityName in Self.syncedEntityNames {
+                    let fetch = NSFetchRequest<NSManagedObject>(entityName: entityName)
+                    fetch.predicate = NSPredicate(format: "id == %@", id as NSUUID)
+                    fetch.fetchLimit = 1
+                    if let obj = try? ctx.fetch(fetch).first { ctx.delete(obj) }
+                }
             }
 
-            func shouldUpdate(current: String, new: String) -> Bool {
-                return new.hasPrefix("FAIL") || !current.hasPrefix("FAIL")
+            do {
+                try ctx.save()
+                NSLog("[applyImportedChanges] save OK")
+            } catch {
+                NSLog("[applyImportedChanges] save FAILED: \(error)")
             }
+        }
+        isImportingFromCloudKit = false
 
-            switch event.type {
-            case .setup:
-                if event.succeeded { self.isCloudKitReady = true }
-                NSLog("[CloudSharingService] CloudKit setup — store:%@ ok=%@", storeID, event.succeeded ? "YES" : "NO")
-            case .export:
-                if isSharedStoreEvent {
-                    if shouldUpdate(current: self.sharedExportStatus, new: status) { self.sharedExportStatus = status }
+        await MainActor.run { sharedStoreVersion += 1 }
+    }
+
+    private func restoreRelationships(obj: NSManagedObject, record: CKRecord, in ctx: NSManagedObjectContext) {
+        switch obj.entity.name {
+        case "MaintenanceTask", "Appliance", "ServiceProvider", "RepairProject", "DocumentSection", "HomeDocument":
+            if let homeIDStr = record["homeIDString"] as? String,
+               let homeID = UUID(uuidString: homeIDStr) {
+                let f = NSFetchRequest<NSManagedObject>(entityName: "Home")
+                f.predicate = NSPredicate(format: "id == %@", homeID as NSUUID)
+                f.fetchLimit = 1
+                if let home = try? ctx.fetch(f).first { obj.setValue(home, forKey: "home") }
+            }
+        case "MaintenanceRecord":
+            if let taskIDStr = record["taskIDString"] as? String,
+               let taskID = UUID(uuidString: taskIDStr) {
+                let f = NSFetchRequest<NSManagedObject>(entityName: "MaintenanceTask")
+                f.predicate = NSPredicate(format: "id == %@", taskID as NSUUID)
+                f.fetchLimit = 1
+                if let task = try? ctx.fetch(f).first { obj.setValue(task, forKey: "task") }
+            }
+        default:
+            break
+        }
+    }
+
+    // MARK: - Zone deletion
+
+    private func deleteAllLocalRecords(in zoneID: CKRecordZone.ID) async {
+        guard zoneID.zoneName.hasPrefix("home-"),
+              let homeID = UUID(uuidString: String(zoneID.zoneName.dropFirst(5))) else { return }
+
+        let bgCtx = persistentContainer.newBackgroundContext()
+        await bgCtx.perform {
+            let homeIDStr = homeID.uuidString
+            let withHomeID: Set<String> = ["MaintenanceTask", "Appliance", "ServiceProvider",
+                                           "RepairProject", "DocumentSection", "HomeDocument"]
+            for name in withHomeID {
+                let f = NSFetchRequest<NSManagedObject>(entityName: name)
+                f.predicate = NSPredicate(format: "homeIDString == %@", homeIDStr)
+                (try? bgCtx.fetch(f))?.forEach { bgCtx.delete($0) }
+            }
+            let hf = NSFetchRequest<NSManagedObject>(entityName: "Home")
+            hf.predicate = NSPredicate(format: "id == %@", homeID as NSUUID)
+            if let h = try? bgCtx.fetch(hf).first { bgCtx.delete(h) }
+            try? bgCtx.save()
+        }
+        await MainActor.run { sharedStoreVersion += 1 }
+    }
+
+    // MARK: - Upload helpers
+
+    private func uploadObjects(_ objects: [NSManagedObject]) async {
+        var byZone: [CKRecordZone.ID: (db: CKDatabase, records: [CKRecord])] = [:]
+        for obj in objects {
+            guard let (zoneID, db) = cloudKitContext(forObject: obj),
+                  let record = makeCKRecord(for: obj, zoneID: zoneID) else { continue }
+            if byZone[zoneID] == nil { byZone[zoneID] = (db: db, records: []) }
+            byZone[zoneID]!.records.append(record)
+        }
+        await withTaskGroup(of: Void.self) { group in
+            for entry in byZone.values {
+                let (db, records) = entry
+                group.addTask { await self.saveRecords(records, to: db) }
+            }
+        }
+    }
+
+    private func cloudKitContext(forObject obj: NSManagedObject) -> (CKRecordZone.ID, CKDatabase)? {
+        if obj.entity.name == "Home" {
+            guard let homeID = obj.value(forKey: "id") as? UUID else { return nil }
+            return cloudKitContext(forHomeID: homeID.uuidString)
+        }
+        if let homeIDStr = obj.value(forKey: "homeIDString") as? String {
+            return cloudKitContext(forHomeID: homeIDStr)
+        }
+        return nil
+    }
+
+    private func cloudKitContext(forHomeID homeIDString: String) -> (CKRecordZone.ID, CKDatabase)? {
+        guard let homeID = UUID(uuidString: homeIDString) else { return nil }
+        if let sharedZone = loadSharedZoneID(for: homeID) {
+            return (sharedZone, ckContainer.sharedCloudDatabase)
+        }
+        let zone = CKRecordZone.ID(zoneName: "home-\(homeID.uuidString)", ownerName: CKCurrentUserDefaultName)
+        return (zone, ckContainer.privateCloudDatabase)
+    }
+
+    private func createZoneIfNeeded(homeID: UUID) async {
+        let zoneID = CKRecordZone.ID(zoneName: "home-\(homeID.uuidString)", ownerName: CKCurrentUserDefaultName)
+        _ = try? await ckContainer.privateCloudDatabase.save(CKRecordZone(zoneID: zoneID))
+    }
+
+    private func makeCKRecord(for obj: NSManagedObject, zoneID: CKRecordZone.ID) -> CKRecord? {
+        guard let id = obj.value(forKey: "id") as? UUID,
+              let entityName = obj.entity.name else { return nil }
+        let record = CKRecord(recordType: entityName,
+                              recordID: CKRecord.ID(recordName: id.uuidString, zoneID: zoneID))
+        for (key, attr) in obj.entity.attributesByName {
+            guard let raw = obj.value(forKey: key) else { continue }
+            record[key] = Self.ckValue(raw, for: attr)
+        }
+        return record
+    }
+
+    private func saveRecords(_ records: [CKRecord], to database: CKDatabase) async {
+        guard !records.isEmpty else { return }
+        let op = CKModifyRecordsOperation(recordsToSave: records)
+        op.savePolicy = .allKeys
+        op.isAtomic = false
+        await withCheckedContinuation { cont in
+            op.completionBlock = { cont.resume() }
+            database.add(op)
+        }
+    }
+
+    private func deleteRecord(id: UUID, zoneID: CKRecordZone.ID, in database: CKDatabase) async {
+        let op = CKModifyRecordsOperation(recordsToSave: nil,
+                                          recordIDsToDelete: [CKRecord.ID(recordName: id.uuidString, zoneID: zoneID)])
+        await withCheckedContinuation { cont in
+            op.completionBlock = { cont.resume() }
+            database.add(op)
+        }
+    }
+
+    // MARK: - Type mapping (NSManagedObject ↔ CKRecord)
+
+    private static func ckValue(_ raw: Any, for attr: NSAttributeDescription) -> CKRecordValueProtocol? {
+        switch attr.attributeType {
+        case .UUIDAttributeType:
+            return (raw as? UUID)?.uuidString
+        case .booleanAttributeType:
+            return (raw as? Bool).map { NSNumber(value: $0 ? 1 : 0) }
+        case .integer32AttributeType:
+            return (raw as? Int32).map { NSNumber(value: Int($0)) }
+        case .binaryDataAttributeType:
+            guard let data = raw as? Data, !data.isEmpty else { return nil }
+            if attr.allowsExternalBinaryDataStorage {
+                let url = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+                try? data.write(to: url)
+                return CKAsset(fileURL: url)
+            }
+            return data as NSData
+        default:
+            return raw as? CKRecordValueProtocol
+        }
+    }
+
+    private static func coreDataValue(_ raw: Any, for attr: NSAttributeDescription) -> Any? {
+        switch attr.attributeType {
+        case .UUIDAttributeType:
+            return (raw as? String).flatMap(UUID.init(uuidString:))
+        case .booleanAttributeType:
+            return (raw as? NSNumber).map { $0.intValue != 0 }
+        case .integer32AttributeType:
+            return (raw as? NSNumber).map { Int32($0.intValue) }
+        case .binaryDataAttributeType:
+            if let asset = raw as? CKAsset, let url = asset.fileURL {
+                return try? Data(contentsOf: url)
+            }
+            return raw as? Data
+        default:
+            return raw
+        }
+    }
+
+    // MARK: - Subscriptions
+
+    func setupSubscriptionsIfNeeded() async {
+        if !UserDefaults.standard.bool(forKey: "ck_sub_private_v1") {
+            let sub = CKDatabaseSubscription(subscriptionID: "home-maintainer-private-v1")
+            let info = CKSubscription.NotificationInfo()
+            info.shouldSendContentAvailable = true
+            sub.notificationInfo = info
+            if (try? await ckContainer.privateCloudDatabase.save(sub)) != nil {
+                UserDefaults.standard.set(true, forKey: "ck_sub_private_v1")
+            }
+        }
+        if !UserDefaults.standard.bool(forKey: "ck_sub_shared_v1") {
+            let sub = CKDatabaseSubscription(subscriptionID: "home-maintainer-shared-v1")
+            let info = CKSubscription.NotificationInfo()
+            info.shouldSendContentAvailable = true
+            sub.notificationInfo = info
+            if (try? await ckContainer.sharedCloudDatabase.save(sub)) != nil {
+                UserDefaults.standard.set(true, forKey: "ck_sub_shared_v1")
+            }
+        }
+    }
+
+    // MARK: - Initial upload (first launch after migration from NSPersistentCloudKitContainer)
+
+    @MainActor
+    func performInitialUploadIfNeeded() async {
+        guard !UserDefaults.standard.bool(forKey: "directCloudKitMigrated_v1") else { return }
+        NSLog("[CloudSharingService] First launch — uploading all local data to direct CloudKit zones")
+
+        let ctx = persistentContainer.viewContext
+
+        let homeFetch = NSFetchRequest<NSManagedObject>(entityName: "Home")
+        let homes = (try? ctx.fetch(homeFetch)) ?? []
+        for h in homes {
+            if let homeID = h.value(forKey: "id") as? UUID {
+                await createZoneIfNeeded(homeID: homeID)
+            }
+        }
+
+        var privateRecords: [CKRecord] = []
+        var sharedRecords: [CKRecord] = []
+        for entityName in Self.syncedEntityNames {
+            let f = NSFetchRequest<NSManagedObject>(entityName: entityName)
+            let objs = (try? ctx.fetch(f)) ?? []
+            for obj in objs {
+                guard let (zoneID, db) = cloudKitContext(forObject: obj),
+                      let record = makeCKRecord(for: obj, zoneID: zoneID) else { continue }
+                if db === ckContainer.privateCloudDatabase {
+                    privateRecords.append(record)
                 } else {
-                    if shouldUpdate(current: self.privateExportStatus, new: status) { self.privateExportStatus = status }
+                    sharedRecords.append(record)
                 }
-                if event.succeeded { self.isCloudKitReady = true }
-                NSLog("[CloudSharingService] CloudKit export — store:%@ status=%@", isSharedStoreEvent ? "SHARED" : "PRIVATE", status)
-            case .import:
-                if isSharedStoreEvent {
-                    if shouldUpdate(current: self.sharedImportStatus, new: status) { self.sharedImportStatus = status }
-                } else {
-                    if shouldUpdate(current: self.privateImportStatus, new: status) { self.privateImportStatus = status }
+            }
+        }
+
+        let batchSize = 400
+        for start in stride(from: 0, to: privateRecords.count, by: batchSize) {
+            let end = min(start + batchSize, privateRecords.count)
+            await saveRecords(Array(privateRecords[start..<end]), to: ckContainer.privateCloudDatabase)
+        }
+        for start in stride(from: 0, to: sharedRecords.count, by: batchSize) {
+            let end = min(start + batchSize, sharedRecords.count)
+            await saveRecords(Array(sharedRecords[start..<end]), to: ckContainer.sharedCloudDatabase)
+        }
+
+        // Pull down any remote changes (gets shared homes on a fresh device)
+        await handleRemoteNotification()
+
+        UserDefaults.standard.set(true, forKey: "directCloudKitMigrated_v1")
+        NSLog("[CloudSharingService] Initial upload done — \(privateRecords.count) private + \(sharedRecords.count) shared")
+    }
+
+    // MARK: - Sharing
+
+    func shareLink(for home: Home, completion: @escaping (Result<URL, Error>) -> Void) {
+        Task {
+            do {
+                let (share, _) = try await createOrFetchShare(for: home)
+                guard let url = share.url else {
+                    await MainActor.run { completion(.failure(SharingError.shareURLUnavailable)) }
+                    return
                 }
-                if event.succeeded {
-                    self.persistentCloudKitContainer?.viewContext.refreshAllObjects()
-                    self.sharedStoreVersion += 1
-                    NSLog("[CloudSharingService] CloudKit import OK — store:%@ version→%d",
-                          isSharedStoreEvent ? "SHARED" : "PRIVATE", self.sharedStoreVersion)
-                }
-            @unknown default:
-                break
-            }
-        }
-
-        foregroundObserver = NotificationCenter.default.addObserver(
-            forName: UIApplication.didBecomeActiveNotification,
-            object: nil,
-            queue: .main
-        ) { [weak self] _ in
-            guard let self, self.sharedStoreIsReady else { return }
-            self.persistentCloudKitContainer?.viewContext.refreshAllObjects()
-            self.sharedStoreVersion += 1
-        }
-
-        // NSPersistentStoreRemoteChangeNotification fires immediately whenever the
-        // underlying SQLite file changes — including on CloudKit imports that arrive
-        // while the app is in the foreground.  This is what makes the list update
-        // automatically without requiring a background/foreground cycle.
-        // Guard on persistentCloudKitContainer (not sharedStoreIsReady) so this fires
-        // even if the shared-store URL matching failed to locate the store.
-        remoteChangeObserver = NotificationCenter.default.addObserver(
-            forName: .NSPersistentStoreRemoteChange,
-            object: nil,
-            queue: .main
-        ) { [weak self] _ in
-            guard let self, self.persistentCloudKitContainer != nil else { return }
-            NSLog("[CloudSharingService] NSPersistentStoreRemoteChange fired — refreshing")
-            self.persistentCloudKitContainer?.viewContext.refreshAllObjects()
-            self.sharedStoreVersion += 1
-        }
-
-        // Explicitly merge every non-viewContext CoreData save into the viewContext.
-        // This is what automaticallyMergesChangesFromParent does under the hood —
-        // we're making it explicit because iOS 26 appears to drop that merge for
-        // NSPersistentCloudKitContainer's internal import contexts, which prevents
-        // @FetchRequest from seeing newly imported CloudKit records.
-        let weakContainer = container
-        contextSaveObserver = NotificationCenter.default.addObserver(
-            forName: NSNotification.Name.NSManagedObjectContextDidSave,
-            object: nil,
-            queue: nil
-        ) { notification in
-            guard let savedCtx = notification.object as? NSManagedObjectContext,
-                  savedCtx !== weakContainer.viewContext else { return }
-            NSLog("[CloudSharingService] NSManagedObjectContextDidSave from non-viewContext — merging into viewContext")
-            DispatchQueue.main.async {
-                weakContainer.viewContext.mergeChanges(fromContextDidSave: notification)
+                await MainActor.run { completion(.success(url)) }
+            } catch {
+                await MainActor.run { completion(.failure(error)) }
             }
         }
     }
 
-    deinit {
-        if let observer = eventObserver { NotificationCenter.default.removeObserver(observer) }
-        if let observer = foregroundObserver { NotificationCenter.default.removeObserver(observer) }
-        if let observer = remoteChangeObserver { NotificationCenter.default.removeObserver(observer) }
-        if let observer = contextSaveObserver { NotificationCenter.default.removeObserver(observer) }
-    }
+    private func createOrFetchShare(for home: Home) async throws -> (CKShare, CKContainer) {
+        let zoneID = CKRecordZone.ID(zoneName: "home-\(home.id.uuidString)", ownerName: CKCurrentUserDefaultName)
+        let db = ckContainer.privateCloudDatabase
 
-    // MARK: - Store URL
-
-    static func makeSharedStoreURL() -> URL {
-        NSPersistentContainer.defaultDirectoryURL().appendingPathComponent("HomeMaintainerShared.sqlite")
-    }
-
-    // MARK: - Shared Store Detection
-
-    func isInSharedStore(entityName: String, id: UUID) -> Bool {
-        guard let sharedStore = sharedPersistentStore,
-              let container = persistentCloudKitContainer else { return false }
-        let request = NSFetchRequest<NSManagedObject>(entityName: entityName)
-        request.predicate = NSPredicate(format: "id == %@", id as NSUUID)
-        request.fetchLimit = 1
-        request.affectedStores = [sharedStore]
-        return (try? container.viewContext.fetch(request).first) != nil
-    }
-
-    // MARK: - Shared Store Writes
-
-    @discardableResult
-    func insertIntoSharedStore(
-        entityName: String,
-        configure: (NSManagedObject) -> Void
-    ) throws -> NSManagedObject {
-        guard let container = persistentCloudKitContainer,
-              let sharedStore = sharedPersistentStore else {
-            throw SharingError.containerNotReady
-        }
-        let ctx = container.viewContext
-        guard let entity = NSEntityDescription.entity(forEntityName: entityName, in: ctx) else {
-            throw SharingError.objectNotFound
-        }
-        let obj = NSManagedObject(entity: entity, insertInto: ctx)
-        ctx.assign(obj, to: sharedStore)
-        configure(obj)
-        return obj
-    }
-
-    @discardableResult
-    func insertLinkedToHome(
-        entityName: String,
-        configure: (NSManagedObject) -> Void
-    ) throws -> NSManagedObject {
-        guard let container = persistentCloudKitContainer else {
-            throw SharingError.containerNotReady
-        }
-        let ctx = container.viewContext
-        guard let entity = NSEntityDescription.entity(forEntityName: entityName, in: ctx) else {
-            throw SharingError.objectNotFound
-        }
-        guard let privateStore = container.persistentStoreCoordinator.persistentStores
-            .first(where: { $0 != sharedPersistentStore }) else {
-            throw SharingError.containerNotReady
-        }
-        let obj = NSManagedObject(entity: entity, insertInto: ctx)
-        ctx.assign(obj, to: privateStore)
-        configure(obj)
-        return obj
-    }
-
-    func addObjectsToHomeShare(objects: [NSManagedObject], homeID: UUID) {
-        NSLog("[CloudSharingService] addObjectsToHomeShare: saving \(objects.count) object(s)")
-        lastTaskAddPath = "par"
-        try? saveSharedContext()
-    }
-
-    func addObjectsToOwnerShare(objects: [NSManagedObject], homeID: UUID) {
-        guard persistentCloudKitContainer != nil else {
-            try? saveSharedContext()
-            return
-        }
-
-        guard let homeObj = findHomeManagedObjectInPrivateStore(id: homeID) else {
-            NSLog("[CloudSharingService] addObjectsToOwnerShare: home not found in private store — plain save")
-            try? saveSharedContext()
-            return
-        }
-
-        lastTaskAddPath = "own"
-        for obj in objects where obj.entity.propertiesByName["home"] != nil {
-            obj.setValue(homeObj, forKey: "home")
-        }
-        try? saveSharedContext()
-    }
-
-    func saveSharedContext() throws {
-        guard let container = persistentCloudKitContainer else {
-            throw SharingError.containerNotReady
-        }
-        if container.viewContext.hasChanges {
-            try container.viewContext.save()
-        }
-        container.viewContext.refreshAllObjects()
-        sharedStoreVersion += 1
-    }
-
-    func insertMaintenanceRecord(taskID: UUID, completedDate: Date, notes: String, action: TaskAction) {
-        guard let container = persistentCloudKitContainer else { return }
-        do {
-            let taskObj = try findManagedObject(id: taskID, entityName: "MaintenanceTask", in: container.viewContext)
-            try insertIntoSharedStore(entityName: "MaintenanceRecord") { obj in
-                obj.setValue(UUID(), forKey: "id")
-                obj.setValue(completedDate, forKey: "completedDate")
-                obj.setValue(notes, forKey: "notes")
-                obj.setValue(action.rawValue, forKey: "action")
-                obj.setValue(taskObj, forKey: "task")
+        // Try fetching an existing zone-wide share.
+        let shareRecordID = CKRecord.ID(recordName: CKRecordNameZoneWideShare, zoneID: zoneID)
+        if let existing = try? await db.record(for: shareRecordID) as? CKShare {
+            if existing.publicPermission != .readWrite {
+                existing.publicPermission = .readWrite
+                existing[CKShare.SystemFieldKey.title] = home.name as CKRecordValue
+                try await modifySingleRecord(existing, in: db)
             }
-            try saveSharedContext()
-        } catch {
-            NSLog("[CloudSharingService] insertMaintenanceRecord failed: \(error)")
+            return (existing, ckContainer)
         }
+
+        // Zone must exist before we create a share.
+        await createZoneIfNeeded(homeID: home.id)
+
+        let share = CKShare(recordZoneID: zoneID)
+        share.publicPermission = .readWrite
+        share[CKShare.SystemFieldKey.title] = home.name as CKRecordValue
+        try await modifySingleRecord(share, in: db)
+        return (share, ckContainer)
     }
 
-    // MARK: - Share a Home
-
-    func shareLink(
-        for home: Home,
-        completion: @escaping (Result<URL, Error>) -> Void
-    ) {
-        Task { @MainActor in
-            var ticks = 0
-            while (persistentCloudKitContainer == nil || !isCloudKitReady), ticks < 60 {
-                try? await Task.sleep(nanoseconds: 500_000_000)
-                ticks += 1
-            }
-
-            guard let ckContainer = persistentCloudKitContainer, isCloudKitReady else {
-                completion(.failure(SharingError.containerNotReady))
-                return
-            }
-
-            guard let homeObject = try? findManagedObject(id: home.id, entityName: "Home", in: ckContainer.viewContext)
-            else {
-                completion(.failure(SharingError.objectNotFound))
-                return
-            }
-
-            if let shares = try? ckContainer.fetchShares(matching: [homeObject.objectID]),
-               let existingShare = shares[homeObject.objectID] {
-                if existingShare.publicPermission == .none {
-                    updatePublicPermission(on: existingShare, home: home, completion: completion)
-                } else if let url = existingShare.url {
-                    completion(.success(url))
-                } else {
-                    fetchShareURL(from: existingShare, completion: completion)
-                }
-            } else {
-                createShareLink(for: homeObject, home: home, container: ckContainer, completion: completion)
-            }
-        }
-    }
-
-    private func createShareLink(
-        for homeObject: NSManagedObject,
-        home: Home,
-        container: NSPersistentCloudKitContainer,
-        completion: @escaping (Result<URL, Error>) -> Void
-    ) {
-        NSLog("[CloudSharingService] Calling share(_:to:) for '\(home.name)' (objectID: \(homeObject.objectID))")
-        container.share([homeObject], to: nil) { _, share, ckContainer, error in
-            if let error {
-                NSLog("[CloudSharingService] share(_:to:) error: \(error)")
-                DispatchQueue.main.async { completion(.failure(error)) }
-                return
-            }
-            guard let share else {
-                DispatchQueue.main.async { completion(.failure(SharingError.shareCreationFailed)) }
-                return
-            }
-            NSLog("[CloudSharingService] share(_:to:) succeeded — url=\(share.url?.absoluteString ?? "nil")")
-
-            share[CKShare.SystemFieldKey.title] = home.name as CKRecordValue
-            share.publicPermission = .readWrite
-
-            let database = (ckContainer ?? CKContainer(identifier: "iCloud.EstraDOS.Home-Maintainer")).privateCloudDatabase
-            let op = CKModifyRecordsOperation(recordsToSave: [share], recordIDsToDelete: nil)
-            op.qualityOfService = .userInitiated
+    private func modifySingleRecord(_ record: CKRecord, in database: CKDatabase) async throws {
+        let op = CKModifyRecordsOperation(recordsToSave: [record])
+        op.savePolicy = .allKeys
+        try await withCheckedThrowingContinuation { (cont: CheckedContinuation<Void, Error>) in
             op.modifyRecordsResultBlock = { result in
-                DispatchQueue.main.async {
-                    if case .failure(let saveError) = result {
-                        NSLog("[CloudSharingService] Failed to save share permissions: \(saveError)")
-                    }
-                    if let url = share.url {
-                        completion(.success(url))
-                    } else {
-                        completion(.failure(SharingError.shareURLUnavailable))
-                    }
+                switch result {
+                case .success: cont.resume()
+                case .failure(let e): cont.resume(throwing: e)
                 }
             }
             database.add(op)
         }
     }
 
-    private func fetchShareURL(
-        from share: CKShare,
-        completion: @escaping (Result<URL, Error>) -> Void
-    ) {
-        let db = CKContainer(identifier: "iCloud.EstraDOS.Home-Maintainer").privateCloudDatabase
-        db.fetch(withRecordID: share.recordID) { record, error in
-            DispatchQueue.main.async {
-                if let fetched = record as? CKShare, let url = fetched.url {
-                    completion(.success(url))
-                } else {
-                    completion(.failure(error ?? SharingError.shareURLUnavailable))
+    func acceptShare(metadata: CKShare.Metadata) {
+        Task {
+            do {
+                try await ckContainer.accept(metadata)
+
+                let metadataZoneID = metadata.share.recordID.zoneID
+                NSLog("[acceptShare] accepted — zoneName=\(metadataZoneID.zoneName) ownerName=\(metadataZoneID.ownerName)")
+
+                // Store zone ID keyed by home UUID so future writes route to the shared database.
+                if metadataZoneID.zoneName.hasPrefix("home-"),
+                   let homeID = UUID(uuidString: String(metadataZoneID.zoneName.dropFirst(5))) {
+                    saveSharedZoneID(metadataZoneID, for: homeID)
+                    NSLog("[acceptShare] stored sharedZone for home \(homeID)")
+                }
+
+                // Ensure a subscription exists for the shared database.
+                UserDefaults.standard.set(false, forKey: "ck_sub_shared_v1")
+                await setupSubscriptionsIfNeeded()
+
+                // PRIMARY: reset the shared-DB token so CKFetchDatabaseChangesOperation does a full
+                // sync, which gives us zone IDs with properly-resolved ownerNames (not "__defaultOwner__").
+                UserDefaults.standard.removeObject(forKey: TokenKey.sharedDB)
+                NSLog("[acceptShare] fetching shared DB changes (full sync)…")
+                await fetchDatabaseChanges(in: ckContainer.sharedCloudDatabase, tokenKey: TokenKey.sharedDB)
+
+                // FALLBACK: also fetch using the metadata zone ID directly.  If the primary path
+                // above already imported the records, this is a no-op (server change token is now
+                // stored, so the operation returns nothing new).  If the primary missed the zone
+                // (timing race on the server), this catches it.
+                NSLog("[acceptShare] direct zone fetch (fallback) — zoneName=\(metadataZoneID.zoneName)")
+                await fetchZoneChanges(zoneIDs: [metadataZoneID], in: ckContainer.sharedCloudDatabase)
+
+                await MainActor.run { sharedStoreVersion += 1 }
+                NSLog("[acceptShare] done — sharedStoreVersion incremented")
+
+            } catch {
+                NSLog("[acceptShare] ERROR: \(error)")
+                await MainActor.run {
+                    if error.localizedDescription.lowercased().contains("owner") {
+                        shareAcceptError = "You're already the owner of this home — it's already in your app."
+                    } else {
+                        shareAcceptError = "Could not accept the home invitation.\n\n\(error.localizedDescription)"
+                    }
                 }
             }
         }
     }
-
-    private func updatePublicPermission(
-        on share: CKShare,
-        home: Home,
-        completion: @escaping (Result<URL, Error>) -> Void
-    ) {
-        share[CKShare.SystemFieldKey.title] = home.name as CKRecordValue
-        share.publicPermission = .readWrite
-        let op = CKModifyRecordsOperation(recordsToSave: [share], recordIDsToDelete: nil)
-        op.qualityOfService = .userInitiated
-        op.modifyRecordsResultBlock = { result in
-            DispatchQueue.main.async {
-                if case .failure(let error) = result {
-                    NSLog("[CloudSharingService] Failed to upgrade share permissions: \(error)")
-                    completion(.failure(error))
-                    return
-                }
-                if let url = share.url {
-                    completion(.success(url))
-                } else {
-                    completion(.failure(SharingError.shareURLUnavailable))
-                }
-            }
-        }
-        CKContainer(identifier: "iCloud.EstraDOS.Home-Maintainer").privateCloudDatabase.add(op)
-    }
-
-    // MARK: - Remove a Shared Home (participant leaving)
 
     func removeSharedHome(_ home: Home) {
-        guard let container = persistentCloudKitContainer,
-              let sharedStore = sharedPersistentStore else {
-            NSLog("[CloudSharingService] removeSharedHome: shared store not ready")
-            return
+        let ctx = persistentContainer.viewContext
+        if let obj = try? findManagedObject(id: home.id, entityName: "Home", in: ctx) {
+            ctx.delete(obj)
+            try? ctx.save()
         }
-
-        guard let homeObj = try? findManagedObject(id: home.id, entityName: "Home", in: container.viewContext) else {
-            NSLog("[CloudSharingService] removeSharedHome: home not found in CoreData context")
-            return
-        }
-
-        if let shares = try? container.fetchShares(matching: [homeObj.objectID]),
-           let share = shares[homeObj.objectID] {
-            let zoneID = share.recordID.zoneID
-            container.purgeObjectsAndRecordsInZone(with: zoneID, in: sharedStore) { _, error in
-                if let error {
-                    NSLog("[CloudSharingService] purgeObjectsAndRecordsInZone error: \(error)")
-                } else {
-                    NSLog("[CloudSharingService] Shared zone purged: \(zoneID.zoneName)")
-                }
-            }
-        } else {
-            container.viewContext.delete(homeObj)
-            try? container.viewContext.save()
-            NSLog("[CloudSharingService] Shared home deleted via CoreData context (no share record found)")
-        }
-    }
-
-    // MARK: - Accept an Incoming Share Invitation
-
-    func acceptShare(metadata: CKShare.Metadata) {
-        guard let container = persistentCloudKitContainer,
-              let sharedStore = sharedPersistentStore else {
-            pendingShareMetadata = metadata
-            let op = CKAcceptSharesOperation(shareMetadatas: [metadata])
-            op.qualityOfService = .userInitiated
-            op.acceptSharesResultBlock = { result in
-                if case .failure(let error) = result {
-                    let nsErr = error as NSError
-                    NSLog("[CloudSharingService] CKAcceptSharesOperation error: \(error) [domain=\(nsErr.domain) code=\(nsErr.code)]")
-                } else {
-                    NSLog("[CloudSharingService] Share pre-accepted at server level")
-                }
-            }
-            CKContainer(identifier: "iCloud.EstraDOS.Home-Maintainer").add(op)
-            return
-        }
-
-        container.acceptShareInvitations(from: [metadata], into: sharedStore) { [weak self] _, error in
-            if let error {
-                let nsErr = error as NSError
-                NSLog("[CloudSharingService] acceptShareInvitations error: \(error) [domain=\(nsErr.domain) code=\(nsErr.code)]")
-                NSLog("[CloudSharingService]   userInfo: \(nsErr.userInfo)")
-
-                let isMirroringError = nsErr.domain == NSCocoaErrorDomain &&
-                    (nsErr.code == 134406 || nsErr.code == 134060)
-                if isMirroringError, let self, !self.hasAttemptedStoreRecovery {
-                    self.hasAttemptedStoreRecovery = true
-                    DispatchQueue.main.async {
-                        self.purgeStaleZonesAndRetry(metadata: metadata, container: container, sharedStore: sharedStore)
-                    }
-                    return
-                }
-
-                DispatchQueue.main.async {
-                    if error.localizedDescription.contains("owner participant") {
-                        self?.shareAcceptError = "You're already the owner of this home — it's already in your app."
-                    } else if isMirroringError {
-                        let path = self?.lastRecoveryPath ?? "unknown"
-                        self?.shareAcceptError = "Your app's sync data was refreshed. Please force-quit the app, reopen it, then tap the invitation link again. [path:\(path)]"
-                    } else {
-                        let detail = "\(error.localizedDescription) [\(nsErr.domain) \(nsErr.code)]"
-                        self?.shareAcceptError = "Could not accept the home invitation.\n\n\(detail)"
-                    }
-                }
-            } else {
-                NSLog("[CloudSharingService] Share accepted and syncing to local shared store")
-                DispatchQueue.main.async {
-                    self?.persistentCloudKitContainer?.viewContext.refreshAllObjects()
-                    self?.sharedStoreVersion += 1
-                }
-            }
-        }
+        UserDefaults.standard.removeObject(forKey: sharedZoneIDKey(for: home.id))
     }
 
     // MARK: - Helpers
 
-    private func findManagedObject(
-        id: UUID, entityName: String, in context: NSManagedObjectContext
-    ) throws -> NSManagedObject? {
-        let request = NSFetchRequest<NSManagedObject>(entityName: entityName)
-        request.predicate = NSPredicate(format: "id == %@", id as NSUUID)
-        request.fetchLimit = 1
-        return try context.fetch(request).first
-    }
-
-    /// Reads taskDocumentsJSON from a MaintenanceTask via CoreData's viewContext.
-    func fetchTaskDocuments(for taskID: UUID) -> [TaskDocument] {
-        guard let sharedStore = sharedPersistentStore,
-              let container = persistentCloudKitContainer else { return [] }
-        let request = NSFetchRequest<NSManagedObject>(entityName: "MaintenanceTask")
-        request.predicate = NSPredicate(format: "id == %@", taskID as NSUUID)
-        request.fetchLimit = 1
-        request.affectedStores = [sharedStore]
-        guard let obj = try? container.viewContext.fetch(request).first else { return [] }
-        let json = obj.value(forKey: "taskDocumentsJSON") as? String
-        return jsonDecode(from: json) ?? []
+    /// Returns true when this device is a participant (not the owner) for the given home.
+    /// The test: a stored shared zone ID means the home arrived via CKShare acceptance.
+    func isParticipant(in home: Home) -> Bool {
+        loadSharedZoneID(for: home.id) != nil
     }
 
     func findHomeManagedObject(id: UUID) -> NSManagedObject? {
-        guard let container = persistentCloudKitContainer else { return nil }
-        let request = NSFetchRequest<NSManagedObject>(entityName: "Home")
-        request.predicate = NSPredicate(format: "id == %@", id as NSUUID)
-        request.fetchLimit = 1
-        return try? container.viewContext.fetch(request).first
+        try? findManagedObject(id: id, entityName: "Home", in: persistentContainer.viewContext)
     }
 
-    func findHomeManagedObjectInPrivateStore(id: UUID) -> NSManagedObject? {
-        guard let container = persistentCloudKitContainer else { return nil }
-        guard let privateStore = container.persistentStoreCoordinator.persistentStores
-            .first(where: { $0 != sharedPersistentStore }) else { return nil }
-        let request = NSFetchRequest<NSManagedObject>(entityName: "Home")
-        request.predicate = NSPredicate(format: "id == %@", id as NSUUID)
-        request.fetchLimit = 1
-        request.affectedStores = [privateStore]
-        let result = try? container.viewContext.fetch(request).first
-        NSLog("[CloudSharingService] findHomeManagedObjectInPrivateStore id=%@ found=%@",
-              id.uuidString, result != nil ? "YES" : "NO")
-        return result
+    private func findManagedObject(id: UUID, entityName: String, in ctx: NSManagedObjectContext) throws -> NSManagedObject? {
+        let r = NSFetchRequest<NSManagedObject>(entityName: entityName)
+        r.predicate = NSPredicate(format: "id == %@", id as NSUUID)
+        r.fetchLimit = 1
+        return try ctx.fetch(r).first
     }
 
-    func refreshSharedStore() {
-        persistentCloudKitContainer?.viewContext.refreshAllObjects()
-        sharedStoreVersion += 1
-        privateExportStatus = "—"
-        sharedExportStatus = "—"
-        privateImportStatus = "—"
-        sharedImportStatus = "—"
+    func save() {
+        let ctx = persistentContainer.viewContext
+        guard ctx.hasChanges else { return }
+        try? ctx.save()
     }
 
-    func isOwnedAndShared(homeID: UUID) -> Bool {
-        guard let container = persistentCloudKitContainer,
-              let homeObj = try? findManagedObject(id: homeID, entityName: "Home", in: container.viewContext) else { return false }
-        return (try? container.fetchShares(matching: [homeObj.objectID]))?[homeObj.objectID] != nil
+    // MARK: - Token and zone ID storage
+
+    private enum TokenKey {
+        static let privateDB = "ck_token_privateDB_v1"
+        static let sharedDB  = "ck_token_sharedDB_v1"
+        static func zone(_ id: CKRecordZone.ID) -> String { "ck_zone_\(id.ownerName)_\(id.zoneName)" }
     }
 
-    // MARK: - Recovery
+    private func sharedZoneIDKey(for homeID: UUID) -> String { "ck_sharedZone_\(homeID.uuidString)" }
 
-    private func purgeStaleZonesAndRetry(
-        metadata: CKShare.Metadata,
-        container: NSPersistentCloudKitContainer,
-        sharedStore: NSPersistentStore
-    ) {
-        let incomingZoneID = metadata.share.recordID.zoneID
-        let ckContainer = CKContainer(identifier: "iCloud.EstraDOS.Home-Maintainer")
-
-        ckContainer.sharedCloudDatabase.fetchAllRecordZones { [weak self] zones, fetchError in
-            guard let self else { return }
-
-            if let fetchError {
-                NSLog("[CloudSharingService] fetchAllRecordZones error: \(fetchError) — falling back to file wipe")
-                DispatchQueue.main.async {
-                    self.lastRecoveryPath = "fetch-failed→wipe"
-                    self.recoverFromStaledSharedStore(metadata: metadata, container: container)
-                }
-                return
-            }
-
-            let staleZoneIDs = (zones ?? []).map(\.zoneID).filter { $0 != incomingZoneID }
-            NSLog("[CloudSharingService] Found \(staleZoneIDs.count) stale zone(s) to purge before retry")
-
-            guard !staleZoneIDs.isEmpty else {
-                DispatchQueue.main.async {
-                    self.lastRecoveryPath = "no-ck-zones→wipe"
-                    self.recoverFromStaledSharedStore(metadata: metadata, container: container)
-                }
-                return
-            }
-
-            var anyPurgeFailed = false
-            let group = DispatchGroup()
-            for zoneID in staleZoneIDs {
-                group.enter()
-                container.purgeObjectsAndRecordsInZone(with: zoneID, in: sharedStore) { _, error in
-                    if let error {
-                        NSLog("[CloudSharingService] Purge \(zoneID.zoneName) error: \(error)")
-                        anyPurgeFailed = true
-                    } else {
-                        NSLog("[CloudSharingService] Purged stale zone: \(zoneID.zoneName)")
-                    }
-                    group.leave()
-                }
-            }
-
-            group.notify(queue: .main) { [weak self] in
-                guard let self else { return }
-                if anyPurgeFailed {
-                    self.lastRecoveryPath = "purge:\(staleZoneIDs.count)zones:some-failed→wipe"
-                    self.recoverFromStaledSharedStore(metadata: metadata, container: container)
-                } else {
-                    self.lastRecoveryPath = "purge:\(staleZoneIDs.count)zones:ok→retry"
-                    self.acceptShare(metadata: metadata)
-                }
-            }
-        }
+    private func loadToken(key: String) -> CKServerChangeToken? {
+        guard let data = UserDefaults.standard.data(forKey: key) else { return nil }
+        return try? NSKeyedUnarchiver.unarchivedObject(ofClass: CKServerChangeToken.self, from: data)
     }
 
-    private func recoverFromStaledSharedStore(metadata: CKShare.Metadata, container: NSPersistentCloudKitContainer) {
-        NSLog("[CloudSharingService] Shared store has stale data — wiping and rebuilding")
-        let url = Self.makeSharedStoreURL()
-
-        if let store = sharedPersistentStore {
-            try? container.persistentStoreCoordinator.remove(store)
-        }
-
-        try? FileManager.default.removeItem(at: url)
-        try? FileManager.default.removeItem(at: URL(fileURLWithPath: url.path + "-wal"))
-        try? FileManager.default.removeItem(at: URL(fileURLWithPath: url.path + "-shm"))
-
-        sharedPersistentStore = nil
-        sharedStoreIsReady = false
-
-        if lastRecoveryPath.isEmpty { lastRecoveryPath = "wipe-only" }
-        pendingShareMetadata = metadata
-
-        reloadSharedStore(container: container)
+    private func saveToken(_ token: CKServerChangeToken, key: String) {
+        guard let data = try? NSKeyedArchiver.archivedData(withRootObject: token, requiringSecureCoding: true) else { return }
+        UserDefaults.standard.set(data, forKey: key)
     }
 
-    /// Re-attaches the shared store after a wipe. Called only during recovery.
-    private func reloadSharedStore(container: NSPersistentCloudKitContainer) {
-        let url = Self.makeSharedStoreURL()
-        let desc = NSPersistentStoreDescription(url: url)
-        let ckOptions = NSPersistentCloudKitContainerOptions(containerIdentifier: "iCloud.EstraDOS.Home-Maintainer")
-        ckOptions.databaseScope = .shared
-        desc.cloudKitContainerOptions = ckOptions
-
-        // Remove any previous description with this URL so loadPersistentStores sees it as new.
-        container.persistentStoreDescriptions.removeAll { $0.url == url }
-        container.persistentStoreDescriptions.append(desc)
-
-        container.loadPersistentStores { [weak self] loadedDesc, error in
-            guard let self else { return }
-            if let error {
-                NSLog("[CloudSharingService] Failed to reload shared store: \(error)")
-                return
-            }
-            guard loadedDesc.url == url else { return }
-            DispatchQueue.main.async {
-                self.sharedPersistentStore = container.persistentStoreCoordinator.persistentStore(for: url)
-                self.sharedStoreIsReady = true
-                NSLog("[CloudSharingService] Shared store reloaded: \(url.lastPathComponent)")
-                if let metadata = self.pendingShareMetadata {
-                    self.pendingShareMetadata = nil
-                    self.acceptShare(metadata: metadata)
-                }
-            }
-        }
+    private func loadSharedZoneID(for homeID: UUID) -> CKRecordZone.ID? {
+        guard let data = UserDefaults.standard.data(forKey: sharedZoneIDKey(for: homeID)) else { return nil }
+        return try? NSKeyedUnarchiver.unarchivedObject(ofClass: CKRecordZone.ID.self, from: data)
     }
+
+    private func saveSharedZoneID(_ zoneID: CKRecordZone.ID, for homeID: UUID) {
+        guard let data = try? NSKeyedArchiver.archivedData(withRootObject: zoneID, requiringSecureCoding: true) else { return }
+        UserDefaults.standard.set(data, forKey: sharedZoneIDKey(for: homeID))
+    }
+
+    deinit {
+        if let obs = contextSaveObserver { NotificationCenter.default.removeObserver(obs) }
+    }
+
+    // MARK: - Backward-compatibility stubs (single-store model — concepts no longer apply)
+
+    /// Always false: with a single CoreData store there is no separate "shared store".
+    func isInSharedStore(entityName: String, id: UUID) -> Bool { false }
+
+    /// Always false: share state is tracked by zone IDs, not CoreData stores.
+    func isOwnedAndShared(homeID: UUID) -> Bool { false }
+
+    /// Alias for save().
+    func saveSharedContext() { save() }
 
     // MARK: - Errors
 
     enum SharingError: LocalizedError {
-        case containerNotReady
-        case objectNotFound
-        case shareCreationFailed
         case shareURLUnavailable
 
         var errorDescription: String? {
-            switch self {
-            case .containerNotReady:    return "iCloud sync is still initializing. Please try again in a moment."
-            case .objectNotFound:       return "Could not find this home in the local database."
-            case .shareCreationFailed:  return "Failed to create a CloudKit share. Please try again."
-            case .shareURLUnavailable:  return "The share link could not be retrieved. Please try again."
-            }
+            "The share link could not be retrieved. Please try again."
         }
     }
 }
 
-// MARK: - UICloudSharingController SwiftUI wrapper
+// MARK: - UICloudSharingController SwiftUI wrapper (kept for any future UIKit sharing UI)
 
 struct CloudSharingSheet: UIViewControllerRepresentable {
     let controller: UICloudSharingController

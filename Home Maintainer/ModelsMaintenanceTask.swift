@@ -134,6 +134,8 @@ public final class MaintenanceRecord: NSManagedObject, Identifiable {
     @NSManaged public var notes: String
     /// Stores TaskAction.rawValue
     @NSManaged public var action: String
+    @NSManaged public var taskIDString: String?
+    @NSManaged public var homeIDString: String?
     @NSManaged public var task: MaintenanceTask?
 
     var taskAction: TaskAction {
@@ -152,6 +154,8 @@ public final class MaintenanceRecord: NSManagedObject, Identifiable {
         let record = MaintenanceRecord(context: context)
         record.id = UUID()
         record.task = task
+        record.taskIDString = task.id.uuidString
+        record.homeIDString = task.homeIDString
         record.completedDate = completedDate
         record.notes = notes
         record.action = action.rawValue

@@ -179,20 +179,23 @@ private struct HomeTasksList: View {
             .sorted { $0.projectTitle.localizedCaseInsensitiveCompare($1.projectTitle) == .orderedAscending }
     }
 
-    /// Total MaintenanceTask rows across all stores (no predicate).
+    /// Total MaintenanceTask rows in CoreData (no predicate).
     private var allCoreDataTaskCount: Int {
-        guard let container = cloudSharingService.persistentCloudKitContainer else { return -1 }
         let req = NSFetchRequest<NSManagedObject>(entityName: "MaintenanceTask")
-        return (try? container.viewContext.fetch(req).count) ?? -1
+        return (try? cloudSharingService.viewContext.fetch(req).count) ?? -1
     }
 
-    /// Tasks in CoreData whose homeIDString matches the current home — bypasses @FetchRequest
-    /// to isolate whether a predicate mismatch is hiding imported records.
+    /// Tasks in CoreData whose homeIDString matches the current home.
     private var matchingCoreDataTaskCount: Int {
-        guard let container = cloudSharingService.persistentCloudKitContainer else { return -1 }
         let req = NSFetchRequest<NSManagedObject>(entityName: "MaintenanceTask")
         req.predicate = NSPredicate(format: "homeIDString == %@", home.id.uuidString)
-        return (try? container.viewContext.fetch(req).count) ?? -1
+        return (try? cloudSharingService.viewContext.fetch(req).count) ?? -1
+    }
+
+    /// Total Home rows in CoreData (diagnostic: confirms whether shared home was saved).
+    private var allCoreDataHomeCount: Int {
+        let req = NSFetchRequest<NSManagedObject>(entityName: "Home")
+        return (try? cloudSharingService.viewContext.fetch(req).count) ?? -1
     }
 
     var body: some View {
@@ -229,15 +232,10 @@ private struct HomeTasksList: View {
             }
         }
         .overlay(alignment: .bottomTrailing) {
-            // Always-visible sync diagnostic panel.
-            // q = @FetchRequest result count (tasks shown in list)
-            // db = all CoreData MaintenanceTask records across all stores
-            // m = CoreData tasks whose homeIDString matches this home
+            // Sync diagnostic panel: q = @FetchRequest count, db = all CoreData tasks, m = matching home
             VStack(alignment: .trailing, spacing: 2) {
                 Text("q:\(homeTasks.count) db:\(allCoreDataTaskCount) m:\(matchingCoreDataTaskCount)")
-                Text("add:\(cloudSharingService.lastTaskAddPath)")
-                Text("xp prv:\(cloudSharingService.privateExportStatus) shr:\(cloudSharingService.sharedExportStatus)")
-                Text("im prv:\(cloudSharingService.privateImportStatus) shr:\(cloudSharingService.sharedImportStatus)")
+                Text("homes:\(allCoreDataHomeCount) sync v\(cloudSharingService.sharedStoreVersion)")
             }
             .font(.caption2)
             .monospacedDigit()
