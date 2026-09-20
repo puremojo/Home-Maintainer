@@ -13,13 +13,33 @@ import UIKit
 import CoreData
 import FirebaseAI
 import FirebaseFunctions
+import FirebaseRemoteConfig
 
 @Observable
 class GeminiService {
     let isConfigured = true
 
     private let functions = Functions.functions()
-    private static let modelName = "gemini-3.5-flash"
+
+    // Model name is resolved from Remote Config so Google deprecating a model doesn't require
+    // an app update — just changing the "gemini_model_name" value in the Firebase console.
+    // This constant is only the fallback used before Remote Config has fetched/activated, or if
+    // fetching fails (e.g. offline): keep it pointed at the current stable model, not a
+    // "-latest" alias — Google explicitly advises against those, since they can silently swap to
+    // a preview/experimental release with only 2 weeks' notice.
+    private static let fallbackModelName = "gemini-3.8-flash"
+
+    private static let remoteConfig: RemoteConfig = {
+        let rc = RemoteConfig.remoteConfig()
+        rc.setDefaults(["gemini_model_name": fallbackModelName as NSObject])
+        return rc
+    }()
+
+    private static func resolvedModelName() async -> String {
+        _ = try? await remoteConfig.fetchAndActivate()
+        let value = remoteConfig["gemini_model_name"].stringValue
+        return value.isEmpty ? fallbackModelName : value
+    }
 
     // A max-output ceiling plus a per-image constant, used only to produce a conservative
     // pre-flight token estimate for checkQuota — the real cost is trued up via reportUsage
@@ -56,7 +76,7 @@ class GeminiService {
         try await checkQuota(estimatedTokens: estimatedTokens)
 
         let memory = currentMemoryText()
-        let model = Self.makeChatModel(memory: memory)
+        let model = await Self.makeChatModel(memory: memory)
         var history: [ModelContent] = [ModelContent(role: "user", parts: userParts)]
         var totalTokensUsed = 0
 
@@ -124,7 +144,8 @@ class GeminiService {
         let estimatedTokens = estimateTokens(text: prompt, imageCount: 0)
         try await checkQuota(estimatedTokens: estimatedTokens)
 
-        let model = FirebaseAI.firebaseAI(backend: .googleAI()).generativeModel(modelName: Self.modelName)
+        let model = FirebaseAI.firebaseAI(backend: .googleAI())
+            .generativeModel(modelName: await Self.resolvedModelName())
         let response = try await model.generateContent(prompt)
         let tokensUsed = response.usageMetadata?.totalTokenCount ?? 0
         await reportUsage(actualTokens: tokensUsed, reservedAmount: estimatedTokens)
@@ -146,12 +167,12 @@ class GeminiService {
 
     // MARK: - Model construction
 
-    private static func makeChatModel(memory: String) -> GenerativeModel {
+    private static func makeChatModel(memory: String) async -> GenerativeModel {
         let systemInstruction = memory.isEmpty
             ? Self.systemPrompt
             : "\(Self.systemPrompt)\n\nWhat you remember about this user:\n\(memory)"
         return FirebaseAI.firebaseAI(backend: .googleAI()).generativeModel(
-            modelName: modelName,
+            modelName: await Self.resolvedModelName(),
             tools: [Self.tool],
             systemInstruction: ModelContent(role: "system", parts: [TextPart(systemInstruction)])
         )
@@ -303,7 +324,8 @@ class GeminiService {
         Reply ONLY with a concise updated memory (under 500 characters). If nothing new, reply with the current memory unchanged. No explanations or greetings.
         """
 
-        let model = FirebaseAI.firebaseAI(backend: .googleAI()).generativeModel(modelName: Self.modelName)
+        let model = FirebaseAI.firebaseAI(backend: .googleAI())
+            .generativeModel(modelName: await Self.resolvedModelName())
         guard let response = try? await model.generateContent(prompt) else { return nil }
         let tokensUsed = response.usageMetadata?.totalTokenCount ?? 0
         guard let text = response.text else { return (current, tokensUsed) }
