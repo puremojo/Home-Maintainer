@@ -11,6 +11,15 @@ const TIER_LIMITS: Record<string, number> = {
   pro: 5_000_000,
 };
 
+// Places searches have a flat per-call cost (unlike variable-length Gemini tokens), so this is
+// a simple monthly call count rather than a token budget. Adjust freely — these numbers aren't
+// mirrored anywhere else.
+const PLACES_SEARCH_LIMITS: Record<string, number> = {
+  free: 10,
+  standard: 50,
+  pro: 200,
+};
+
 // hAIndyman now calls Gemini directly from the device via Firebase AI Logic — chat content,
 // system prompts, and tool schemas live client-side (see GeminiService.swift) and never reach
 // this backend. What remains here is purely the tamper-resistant quota gate: these two
@@ -124,6 +133,8 @@ export const clearMigratedMemory = onCall(
 
 // Proxy for Google Places API — keeps the API key server-side.
 // iOS sends { query, latitude?, longitude? } and receives the raw Places response.
+// Content-blind logging: nothing about the query text or location is ever logged here, only
+// the monthly call count needed to enforce the quota below.
 export const placesSearch = onCall(
   {
     enforceAppCheck: true,
@@ -146,8 +157,45 @@ export const placesSearch = onCall(
       throw new HttpsError("invalid-argument", "query is required.");
     }
 
+    // Atomic check-and-increment — a flat count, not an estimate/true-up pair like Gemini's
+    // token quota, since every search costs the same regardless of what's searched for.
+    const db = getFirestore();
+    const userRef = db.collection("users").doc(request.auth.uid);
+    await db.runTransaction(async (tx) => {
+      const userDoc = await tx.get(userRef);
+      if (!userDoc.exists) {
+        throw new HttpsError("not-found", "User record not found. Please sign out and sign in again.");
+      }
+
+      const userData = userDoc.data()!;
+      const tier = (userData.tier as string) ?? "free";
+      const limit = PLACES_SEARCH_LIMITS[tier] ?? PLACES_SEARCH_LIMITS.free;
+      let used = (userData.monthlyPlacesSearchesUsed as number) ?? 0;
+
+      // Same monthly billing cycle as the Gemini token quota — reuses tierResetDate so both
+      // counters roll over together instead of drifting on separate schedules.
+      const updates: Record<string, unknown> = {};
+      const resetDate = (userData.tierResetDate as Timestamp)?.toDate();
+      if (resetDate && new Date() > resetDate) {
+        const nextReset = new Date();
+        nextReset.setMonth(nextReset.getMonth() + 1);
+        updates.tierResetDate = nextReset;
+        updates.monthlyTokensUsed = 0;
+        used = 0;
+      }
+
+      if (used >= limit) {
+        throw new HttpsError(
+          "resource-exhausted",
+          `Monthly limit of ${limit.toLocaleString()} local business searches reached. Upgrade your plan to continue.`
+        );
+      }
+
+      updates.monthlyPlacesSearchesUsed = used + 1;
+      tx.update(userRef, updates);
+    });
+
     const apiKey = process.env.GOOGLE_PLACES_API_KEY ?? "";
-    console.log(`placesSearch: query="${query}", keyLength=${apiKey.length}`);
 
     const fieldMask = [
       "places.id",
