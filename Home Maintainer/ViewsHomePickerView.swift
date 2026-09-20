@@ -33,6 +33,8 @@ struct HomePickerView: View {
     @State private var showingSharingError = false
     @State private var homeToDelete: Home?
     @State private var showingDeleteConfirmation = false
+    @State private var pendingShareHome: Home?
+    @State private var showingShareHint = false
 
     var body: some View {
         NavigationStack {
@@ -43,8 +45,8 @@ struct HomePickerView: View {
                         homeManager.select(home)
                         dismiss()
                     },
-                    onShare: presentSharing,
-                    onShowParticipants: presentSharing,
+                    onShare: beginSharing,
+                    onShowParticipants: beginSharing,
                     onDelete: { home in
                         homeToDelete = home
                         showingDeleteConfirmation = true
@@ -129,6 +131,14 @@ struct HomePickerView: View {
             } message: {
                 Text(importError ?? "The file could not be imported.")
             }
+            .alert("Inviting Someone?", isPresented: $showingShareHint) {
+                Button("Got It") {
+                    if let home = pendingShareHome { presentSharing(for: home) }
+                    pendingShareHome = nil
+                }
+            } message: {
+                Text("On the next screen, tap \"Add Access\" and search their name — that's the step that reliably finds their Apple ID. The quick contact suggestions at the top don't always work, since they may use a phone number that isn't linked to iCloud.")
+            }
         }
     }
 
@@ -147,6 +157,14 @@ struct HomePickerView: View {
     }
 
     // MARK: - Actions
+
+    /// Shows the "Add Access" hint every time the share sheet is opened — the quick-contact
+    /// mistake is easy to make again even after seeing it once, so this stays up front rather
+    /// than being a one-time tip.
+    private func beginSharing(for home: Home) {
+        pendingShareHome = home
+        showingShareHint = true
+    }
 
     /// Presents Apple's native UICloudSharingController for the home — one screen that covers
     /// both "Share" (invite by contact/email) and "People" (view/manage existing participants,
