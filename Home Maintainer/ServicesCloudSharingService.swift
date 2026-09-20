@@ -182,6 +182,16 @@ final class CloudSharingService: @unchecked Sendable {
         guard !inserted.isEmpty || !updated.isEmpty || !deleted.isEmpty else { return }
         log("[handleViewContextSave] inserted=\(inserted.count) updated=\(updated.count) deleted=\(deleted.count)")
 
+        // Views that key an @FetchRequest-backed list off sharedStoreVersion (e.g.
+        // HomeTasksList) only recreate — and re-fetch — when this changes. That was originally
+        // added for CloudKit-imported changes only, but plain local edits (e.g. renaming a task)
+        // need the same nudge: @FetchRequest doesn't reliably auto-refresh a compound predicate
+        // spanning multiple persistent stores in this app's dynamic multi-store setup, so a local
+        // save could otherwise sit stale in the list until something else forced a re-fetch (e.g.
+        // switching homes and back). This notification always fires on the main thread since
+        // viewContext is main-queue-confined, so no thread hop is needed here.
+        sharedStoreVersion += 1
+
         let newHomeIDs = inserted.compactMap { $0.entity.name == "Home" ? $0.value(forKey: "id") as? UUID : nil }
         let needsPersonalZone = inserted.contains { Self.personalEntityNames.contains($0.entity.name ?? "") }
 
@@ -715,30 +725,21 @@ final class CloudSharingService: @unchecked Sendable {
 
     // MARK: - Sharing
 
-    func shareLink(for home: Home, completion: @escaping (Result<URL, Error>) -> Void) {
-        Task {
-            do {
-                let (share, _) = try await createOrFetchShare(for: home)
-                guard let url = share.url else {
-                    await MainActor.run { completion(.failure(SharingError.shareURLUnavailable)) }
-                    return
-                }
-                await MainActor.run { completion(.success(url)) }
-            } catch {
-                await MainActor.run { completion(.failure(error)) }
-            }
-        }
-    }
-
-    private func createOrFetchShare(for home: Home) async throws -> (CKShare, CKContainer) {
+    /// Fetches (or creates) the home's zone-wide CKShare for use with UICloudSharingController.
+    /// Always private (publicPermission = .none) — participants are explicit invitees rather
+    /// than "anyone with this link," which is what makes Apple's native per-participant remove
+    /// UI a real, durable removal: kicking one person never touches anyone else's access, and
+    /// they can't rejoin without a fresh explicit invite. Flipping an existing share from the
+    /// old public model to this one doesn't affect anyone already accepted — it only closes the
+    /// door to new anonymous joiners via an old link.
+    func fetchOrCreateShare(for home: Home) async throws -> (CKShare, CKContainer) {
         let zoneID = CKRecordZone.ID(zoneName: "home-\(home.id.uuidString)", ownerName: CKCurrentUserDefaultName)
         let db = ckContainer.privateCloudDatabase
 
-        // Try fetching an existing zone-wide share.
         let shareRecordID = CKRecord.ID(recordName: CKRecordNameZoneWideShare, zoneID: zoneID)
         if let existing = try? await db.record(for: shareRecordID) as? CKShare {
-            if existing.publicPermission != .readWrite {
-                existing.publicPermission = .readWrite
+            if existing.publicPermission != .none {
+                existing.publicPermission = .none
                 existing[CKShare.SystemFieldKey.title] = home.name as CKRecordValue
                 try await modifySingleRecord(existing, in: db)
             }
@@ -749,7 +750,7 @@ final class CloudSharingService: @unchecked Sendable {
         await createZoneIfNeeded(homeID: home.id)
 
         let share = CKShare(recordZoneID: zoneID)
-        share.publicPermission = .readWrite
+        share.publicPermission = .none
         share[CKShare.SystemFieldKey.title] = home.name as CKRecordValue
         try await modifySingleRecord(share, in: db)
         return (share, ckContainer)
@@ -940,9 +941,10 @@ final class CloudSharingService: @unchecked Sendable {
 
 struct CloudSharingSheet: UIViewControllerRepresentable {
     let controller: UICloudSharingController
+    var title: String
     var onDismiss: () -> Void = {}
 
-    func makeCoordinator() -> Coordinator { Coordinator(onDismiss: onDismiss) }
+    func makeCoordinator() -> Coordinator { Coordinator(title: title, onDismiss: onDismiss) }
 
     func makeUIViewController(context: Context) -> UICloudSharingController {
         controller.delegate = context.coordinator
@@ -952,10 +954,14 @@ struct CloudSharingSheet: UIViewControllerRepresentable {
     func updateUIViewController(_ uiViewController: UICloudSharingController, context: Context) {}
 
     final class Coordinator: NSObject, UICloudSharingControllerDelegate {
+        var title: String
         var onDismiss: () -> Void
-        init(onDismiss: @escaping () -> Void) { self.onDismiss = onDismiss }
+        init(title: String, onDismiss: @escaping () -> Void) {
+            self.title = title
+            self.onDismiss = onDismiss
+        }
 
-        func itemTitle(for csc: UICloudSharingController) -> String? { nil }
+        func itemTitle(for csc: UICloudSharingController) -> String? { title }
         func cloudSharingControllerDidSaveShare(_ csc: UICloudSharingController) { onDismiss() }
         func cloudSharingControllerDidStopSharing(_ csc: UICloudSharingController) { onDismiss() }
         func cloudSharingController(_ csc: UICloudSharingController,

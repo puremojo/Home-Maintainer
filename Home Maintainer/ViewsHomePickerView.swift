@@ -25,9 +25,9 @@ struct HomePickerView: View {
     @State private var showingImport = false
     @State private var importError: String?
     @State private var showingImportError = false
-    @State private var shareURL: URL?
-    @State private var shareHomeName: String = ""
-    @State private var showingShareSheet = false
+    @State private var cloudSharingController: UICloudSharingController?
+    @State private var cloudSharingHomeName = ""
+    @State private var showingCloudSharing = false
     @State private var isSharingLoading = false
     @State private var sharingError: String?
     @State private var showingSharingError = false
@@ -43,7 +43,8 @@ struct HomePickerView: View {
                         homeManager.select(home)
                         dismiss()
                     },
-                    onShare: shareHome,
+                    onShare: presentSharing,
+                    onShowParticipants: presentSharing,
                     onDelete: { home in
                         homeToDelete = home
                         showingDeleteConfirmation = true
@@ -92,11 +93,12 @@ struct HomePickerView: View {
             ) { result in
                 handleImport(result: result)
             }
-            .sheet(isPresented: $showingShareSheet) {
-                if let url = shareURL {
-                    ActivityView(
-                        activityItems: ["\(shareHomeName) is shared using Home Maintainer", url],
-                        subject: "\(shareHomeName) – Home Maintainer Invitation"
+            .sheet(isPresented: $showingCloudSharing) {
+                if let controller = cloudSharingController {
+                    CloudSharingSheet(
+                        controller: controller,
+                        title: cloudSharingHomeName,
+                        onDismiss: { showingCloudSharing = false }
                     )
                     .ignoresSafeArea()
                 }
@@ -146,18 +148,32 @@ struct HomePickerView: View {
 
     // MARK: - Actions
 
-    private func shareHome(_ home: Home) {
+    /// Presents Apple's native UICloudSharingController for the home — one screen that covers
+    /// both "Share" (invite by contact/email) and "People" (view/manage existing participants,
+    /// owner-only remove) since it's the same underlying CKShare either way. Removing someone
+    /// here only revokes that one person's access; everyone else is untouched, and only their
+    /// future access is affected — nothing they created or edited is deleted (see the
+    /// createdByName/editedByName activity log, which stays on every record regardless of
+    /// whether its author still has access to the home).
+    private func presentSharing(for home: Home) {
         isSharingLoading = true
-        cloudSharingService.shareLink(for: home) { result in
-            isSharingLoading = false
-            switch result {
-            case .success(let url):
-                shareURL = url
-                shareHomeName = home.name
-                showingShareSheet = true
-            case .failure(let error):
-                sharingError = error.localizedDescription
-                showingSharingError = true
+        Task {
+            do {
+                let (share, container) = try await cloudSharingService.fetchOrCreateShare(for: home)
+                await MainActor.run {
+                    let controller = UICloudSharingController(share: share, container: container)
+                    controller.availablePermissions = [.allowReadWrite, .allowPrivate]
+                    isSharingLoading = false
+                    cloudSharingController = controller
+                    cloudSharingHomeName = home.name
+                    showingCloudSharing = true
+                }
+            } catch {
+                await MainActor.run {
+                    isSharingLoading = false
+                    sharingError = error.localizedDescription
+                    showingSharingError = true
+                }
             }
         }
     }
@@ -221,6 +237,7 @@ private struct HomesListContent: View {
     let currentHomeID: UUID?
     let onSelect: (Home) -> Void
     let onShare: (Home) -> Void
+    let onShowParticipants: (Home) -> Void
     let onDelete: (Home) -> Void
 
     @Environment(HomeManager.self) private var homeManager
@@ -241,6 +258,7 @@ private struct HomesListContent: View {
                     isOwner: homeManager.isCurrentUserOwner(of: home),
                     onSelect: { onSelect(home) },
                     onShare: { onShare(home) },
+                    onShowParticipants: { onShowParticipants(home) },
                     onDelete: { onDelete(home) }
                 )
             }
@@ -256,6 +274,7 @@ private struct HomeRow: View {
     let isOwner: Bool
     let onSelect: () -> Void
     let onShare: () -> Void
+    let onShowParticipants: () -> Void
     let onDelete: () -> Void
 
     var body: some View {
@@ -303,6 +322,10 @@ private struct HomeRow: View {
                     }
                     .tint(.blue)
                 }
+                Button(action: onShowParticipants) {
+                    Label("People", systemImage: "person.2")
+                }
+                .tint(.indigo)
             }
         }
     }
