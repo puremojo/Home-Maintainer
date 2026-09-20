@@ -54,6 +54,7 @@ struct Home_MaintainerApp: App {
                 .task {
                     await cloudSharingService.performInitialUploadIfNeeded()
                     await cloudSharingService.migratePersonalDataIfNeeded()
+                    await cloudSharingService.recoverStaleCloudKitTokensIfNeeded()
                 }
         }
     }

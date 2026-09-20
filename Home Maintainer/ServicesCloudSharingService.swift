@@ -124,6 +124,12 @@ final class CloudSharingService: @unchecked Sendable {
                                               at: privateURL, options: nil)) == nil {
                 NSLog("⚠️ Destroying incompatible CoreData store: \(privateURL.lastPathComponent)")
                 try? probe.destroyPersistentStore(at: privateURL, ofType: NSSQLiteStoreType, options: nil)
+                // The CloudKit change tokens live in UserDefaults, independent of the SQLite file —
+                // destroying the store without also clearing them leaves the fresh, empty store
+                // pointing at a token that tells CloudKit "nothing's changed," so previously-synced
+                // data (e.g. existing Homes) never gets re-fetched. Clear them so the next sync is
+                // a full historical fetch of every zone, repopulating the store as intended.
+                clearCloudKitSyncTokens()
             }
         }
 
@@ -687,6 +693,26 @@ final class CloudSharingService: @unchecked Sendable {
         log("[CloudSharingService] Personal data migration done — \(records.count) record(s)")
     }
 
+    // MARK: - One-time recovery from the build 73 stale-token bug
+
+    /// Build 73's schema change (adding the personal-zone entities above) triggered
+    /// makeContainer()'s store-destroy safety valve, but at the time it didn't clear the
+    /// CloudKit change tokens — leaving affected installs with an empty local store that
+    /// believed itself fully synced, silently hiding previously-synced Homes and other data.
+    /// This runs once to clear those stale tokens and force an immediate full resync, so
+    /// already-affected devices self-heal on the next launch without needing a reinstall.
+    @MainActor
+    func recoverStaleCloudKitTokensIfNeeded() async {
+        guard !UserDefaults.standard.bool(forKey: "staleTokenRecovery_build73_v1") else { return }
+        log("[CloudSharingService] Recovering from build 73 stale-token bug — forcing full resync")
+
+        Self.clearCloudKitSyncTokens()
+        await handleRemoteNotification()
+
+        UserDefaults.standard.set(true, forKey: "staleTokenRecovery_build73_v1")
+        log("[CloudSharingService] Stale-token recovery done")
+    }
+
     // MARK: - Sharing
 
     func shareLink(for home: Home, completion: @escaping (Result<URL, Error>) -> Void) {
@@ -848,6 +874,18 @@ final class CloudSharingService: @unchecked Sendable {
         static let privateDB = "ck_token_privateDB_v1"
         static let sharedDB  = "ck_token_sharedDB_v1"
         static func zone(_ id: CKRecordZone.ID) -> String { "ck_zone_\(id.ownerName)_\(id.zoneName)" }
+    }
+
+    /// Clears every cached CloudKit change token (database-level and per-zone), forcing the next
+    /// fetch to be a full historical one rather than "what's changed since last time." Needed
+    /// whenever the local CoreData store is discarded, since these tokens live in UserDefaults
+    /// independent of the SQLite file and would otherwise survive a store wipe untouched.
+    static func clearCloudKitSyncTokens() {
+        let defaults = UserDefaults.standard
+        for key in defaults.dictionaryRepresentation().keys
+        where key.hasPrefix("ck_token_") || key.hasPrefix("ck_zone_") {
+            defaults.removeObject(forKey: key)
+        }
     }
 
     private func sharedZoneIDKey(for homeID: UUID) -> String { "ck_sharedZone_\(homeID.uuidString)" }
