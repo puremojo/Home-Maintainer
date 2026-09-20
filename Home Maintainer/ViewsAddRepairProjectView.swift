@@ -11,6 +11,7 @@ import CoreData
 struct AddRepairProjectView: View {
     @Environment(\.managedObjectContext) private var viewContext
     @Environment(\.dismiss) private var dismiss
+    @Environment(AuthService.self) private var authService
 
     let home: Home?
 
@@ -94,6 +95,7 @@ struct AddRepairProjectView: View {
         project.notes = notes
         project.home = home
         project.homeIDString = home?.id.uuidString
+        project.createdByName = authService.displayName
 
         for draft in productDrafts where !draft.isEmpty {
             let product = ProductLink.make(name: draft.name, urlString: draft.urlString,

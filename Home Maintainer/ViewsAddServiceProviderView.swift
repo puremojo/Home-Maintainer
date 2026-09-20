@@ -11,6 +11,7 @@ import CoreData
 struct AddServiceProviderView: View {
     @Environment(\.managedObjectContext) private var viewContext
     @Environment(\.dismiss) private var dismiss
+    @Environment(AuthService.self) private var authService
 
     let home: Home?
 
@@ -109,6 +110,7 @@ struct AddServiceProviderView: View {
         provider.rating = Int32(rating)
         provider.home = home
         provider.homeIDString = home?.id.uuidString
+        provider.createdByName = authService.displayName
         try? viewContext.save()
         dismiss()
     }

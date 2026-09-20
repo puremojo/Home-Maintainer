@@ -27,6 +27,9 @@ public final class ServiceProvider: NSManagedObject, Identifiable {
     @NSManaged public var googlePriceLevel: String?
     @NSManaged private var weekdayHoursJSON: String?
     @NSManaged private var businessTypesJSON: String?
+    @NSManaged public var createdByName: String?
+    @NSManaged public var editedByName: String?
+    @NSManaged public var editedAt: Date?
 
     // Relationships
     @NSManaged public var home: Home?

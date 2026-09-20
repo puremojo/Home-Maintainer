@@ -25,6 +25,9 @@ public final class RepairProject: NSManagedObject, Identifiable {
     @NSManaged public var totalCost: Double
     @NSManaged private var projectDocumentsJSON: String?
     @NSManaged private var workDatesJSON: String?
+    @NSManaged public var createdByName: String?
+    @NSManaged public var editedByName: String?
+    @NSManaged public var editedAt: Date?
 
     // Relationships
     @NSManaged public var home: Home?

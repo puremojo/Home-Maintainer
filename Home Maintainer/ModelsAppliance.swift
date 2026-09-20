@@ -22,6 +22,9 @@ public final class Appliance: NSManagedObject, Identifiable {
     @NSManaged public var createdAt: Date
     @NSManaged public var homeIDString: String?
     @NSManaged private var documentsJSON: String?
+    @NSManaged public var createdByName: String?
+    @NSManaged public var editedByName: String?
+    @NSManaged public var editedAt: Date?
 
     // Relationships
     @NSManaged public var home: Home?

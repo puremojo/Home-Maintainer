@@ -16,6 +16,7 @@ struct ApplianceDetailView: View {
     @Environment(\.managedObjectContext) private var viewContext
     @Environment(GeminiService.self) private var geminiService
     @Environment(HomeManager.self) private var homeManager
+    @Environment(AuthService.self) private var authService
     @FetchRequest(sortDescriptors: [SortDescriptor(\.name)]) private var allTasks: FetchedResults<MaintenanceTask>
     var appliance: Appliance
     @State private var isEditing = false
@@ -237,6 +238,14 @@ struct ApplianceDetailView: View {
                 }
                 .disabled(isFetchingSuggestions)
             }
+
+            ActivityLogSection(
+                itemName: appliance.name,
+                createdByName: appliance.createdByName,
+                createdAt: appliance.createdAt,
+                editedByName: appliance.editedByName,
+                editedAt: appliance.editedAt
+            )
         }
         .navigationTitle(appliance.name)
         .navigationBarTitleDisplayMode(.inline)
@@ -340,6 +349,7 @@ struct ApplianceDetailView: View {
             )
             task.home = homeManager.currentHome
             task.homeIDString = homeManager.currentHome?.id.uuidString
+            task.createdByName = authService.displayName
 
             for product in suggestion.products {
                 let encoded = product.searchQuery
@@ -359,6 +369,7 @@ struct ApplianceDetailView: View {
 struct EditApplianceView: View {
     @Environment(\.dismiss) private var dismiss
     @Environment(\.managedObjectContext) private var viewContext
+    @Environment(AuthService.self) private var authService
     var appliance: Appliance
 
     @State private var name: String
@@ -433,6 +444,8 @@ struct EditApplianceView: View {
                         appliance.purchaseDate = purchaseDate
                         appliance.warrantyExpiration = warrantyExpiration
                         appliance.notes = notes
+                        appliance.editedByName = authService.displayName
+                        appliance.editedAt = Date()
                         try? viewContext.save()
                         dismiss()
                     }

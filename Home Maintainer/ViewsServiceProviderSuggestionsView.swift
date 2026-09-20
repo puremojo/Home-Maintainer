@@ -194,6 +194,7 @@ struct FindBusinessesView: View {
 struct GooglePlaceRow: View {
     @Environment(\.managedObjectContext) private var viewContext
     @Environment(CloudSharingService.self) private var cloudSharingService
+    @Environment(AuthService.self) private var authService
     @FetchRequest(sortDescriptors: [SortDescriptor(\.name)]) private var allProviders: FetchedResults<ServiceProvider>
 
     let place: GooglePlaceResult
@@ -340,6 +341,7 @@ struct GooglePlaceRow: View {
         provider.businessTypes = place.types.isEmpty ? nil : place.types
         provider.home = home
         provider.homeIDString = home?.id.uuidString
+        provider.createdByName = authService.displayName
         try? viewContext.save()
     }
 }

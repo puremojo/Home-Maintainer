@@ -47,6 +47,9 @@ public final class HomeDocument: NSManagedObject, Identifiable {
     @NSManaged public var homeIDString: String?
     @NSManaged public var sectionIDString: String?
     @NSManaged public var createdAt: Date
+    @NSManaged public var createdByName: String?
+    @NSManaged public var editedByName: String?
+    @NSManaged public var editedAt: Date?
     @NSManaged public var linkedAppliance: Appliance?
     @NSManaged public var section: DocumentSection?
     @NSManaged public var home: Home?

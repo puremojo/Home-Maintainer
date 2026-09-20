@@ -160,6 +160,10 @@ enum AppDataModel {
             strAttr("homeIDString", optional: true),
             strAttr("sourceProjectIDString", optional: true),
             strAttr("taskDocumentsJSON", optional: true),
+            strAttr("calendarEventIdentifier", optional: true),
+            strAttr("createdByName", optional: true),
+            strAttr("editedByName", optional: true),
+            dateAttr("editedAt", optional: true),
         ]
 
         recordEnt.properties = [
@@ -184,6 +188,9 @@ enum AppDataModel {
             dateAttr("createdAt"),
             strAttr("homeIDString", optional: true),
             strAttr("documentsJSON", optional: true),
+            strAttr("createdByName", optional: true),
+            strAttr("editedByName", optional: true),
+            dateAttr("editedAt", optional: true),
         ]
 
         photoEnt.properties = [
@@ -210,6 +217,9 @@ enum AppDataModel {
             strAttr("googlePriceLevel", optional: true),
             strAttr("weekdayHoursJSON", optional: true),
             strAttr("businessTypesJSON", optional: true),
+            strAttr("createdByName", optional: true),
+            strAttr("editedByName", optional: true),
+            dateAttr("editedAt", optional: true),
         ]
 
         projectEnt.properties = [
@@ -227,6 +237,9 @@ enum AppDataModel {
             doubleAttr("totalCost", optional: true),
             strAttr("projectDocumentsJSON", optional: true),
             strAttr("workDatesJSON", optional: true),
+            strAttr("createdByName", optional: true),
+            strAttr("editedByName", optional: true),
+            dateAttr("editedAt", optional: true),
         ]
 
         contactEnt.properties = [
@@ -283,6 +296,9 @@ enum AppDataModel {
             strAttr("homeIDString", optional: true),
             strAttr("sectionIDString", optional: true),
             dateAttr("createdAt"),
+            strAttr("createdByName", optional: true),
+            strAttr("editedByName", optional: true),
+            dateAttr("editedAt", optional: true),
         ]
 
         convEnt.properties = [

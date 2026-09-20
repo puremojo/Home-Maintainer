@@ -12,6 +12,7 @@ import PhotosUI
 struct AddApplianceView: View {
     @Environment(\.managedObjectContext) private var viewContext
     @Environment(\.dismiss) private var dismiss
+    @Environment(AuthService.self) private var authService
 
     let home: Home?
 
@@ -149,6 +150,7 @@ struct AddApplianceView: View {
         appliance.room = room
         appliance.home = home
         appliance.homeIDString = home?.id.uuidString
+        appliance.createdByName = authService.displayName
 
         for data in photoData {
             appliance.addPhoto(data: data, in: viewContext)

@@ -172,6 +172,14 @@ struct ServiceProviderDetailView: View {
                     Text("Projects where this provider was hired, sorted by most recent")
                 }
             }
+
+            ActivityLogSection(
+                itemName: provider.name,
+                createdByName: provider.createdByName,
+                createdAt: provider.createdAt,
+                editedByName: provider.editedByName,
+                editedAt: provider.editedAt
+            )
         }
         .navigationTitle(provider.name)
         .navigationBarTitleDisplayMode(.inline)
@@ -191,6 +199,7 @@ struct ServiceProviderDetailView: View {
 struct EditServiceProviderView: View {
     @Environment(\.dismiss) private var dismiss
     @Environment(\.managedObjectContext) private var viewContext
+    @Environment(AuthService.self) private var authService
     var provider: ServiceProvider
 
     @State private var name: String
@@ -285,6 +294,8 @@ struct EditServiceProviderView: View {
                         provider.notes = notes
                         provider.isFavorite = isFavorite
                         provider.rating = Int32(rating)
+                        provider.editedByName = authService.displayName
+                        provider.editedAt = Date()
                         try? viewContext.save()
                         dismiss()
                     }

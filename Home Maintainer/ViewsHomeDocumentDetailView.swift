@@ -28,6 +28,7 @@ struct HomeDocumentDetailView: View {
     @Environment(\.managedObjectContext) private var viewContext
     @Environment(HomeManager.self) private var homeManager
     @Environment(CloudSharingService.self) private var cloudSharingService
+    @Environment(AuthService.self) private var authService
     @FetchRequest(sortDescriptors: [SortDescriptor(\.name)]) private var allTasks: FetchedResults<MaintenanceTask>
     @FetchRequest(sortDescriptors: [SortDescriptor(\.name)]) private var allAppliances: FetchedResults<Appliance>
     @FetchRequest(sortDescriptors: [SortDescriptor(\.title)]) private var allProjects: FetchedResults<RepairProject>
@@ -74,6 +75,7 @@ struct HomeDocumentDetailView: View {
                 if newValue != nil {
                     document.section = nil
                 }
+                stampEdited()
                 try? viewContext.save()
             }
         )
@@ -84,10 +86,12 @@ struct HomeDocumentDetailView: View {
             Section("Title") {
                 TextField("Document Title", text: $title, onCommit: {
                     document.title = title
+                    stampEdited()
                     try? viewContext.save()
                 })
                 .onChange(of: title) { _, newValue in
                     document.title = newValue
+                    stampEdited()
                     try? viewContext.save()
                 }
             }
@@ -128,6 +132,7 @@ struct HomeDocumentDetailView: View {
                             document.attachmentData = nil
                             document.attachmentName = nil
                             document.attachmentContentType = nil
+                            stampEdited()
                             try? viewContext.save()
                         }
                     }
@@ -167,6 +172,7 @@ struct HomeDocumentDetailView: View {
                     .swipeActions {
                         Button("Remove", role: .destructive) {
                             document.linkedAppliance = nil
+                            stampEdited()
                             try? viewContext.save()
                         }
                     }
@@ -200,6 +206,7 @@ struct HomeDocumentDetailView: View {
                     let idsToRemove = offsets.map { linkedTasks[$0].id }
                     linkedTaskIDs.removeAll { idsToRemove.contains($0) }
                     document.linkedTaskIDs = linkedTaskIDs
+                    stampEdited()
                     try? viewContext.save()
                 }
 
@@ -226,6 +233,7 @@ struct HomeDocumentDetailView: View {
                     let idsToRemove = offsets.map { linkedProjects[$0].id }
                     linkedProjectIDs.removeAll { idsToRemove.contains($0) }
                     document.linkedProjectIDs = linkedProjectIDs
+                    stampEdited()
                     try? viewContext.save()
                 }
 
@@ -237,6 +245,14 @@ struct HomeDocumentDetailView: View {
             } header: {
                 Text("Linked Projects")
             }
+
+            ActivityLogSection(
+                itemName: document.title.isEmpty ? "this document" : document.title,
+                createdByName: document.createdByName,
+                createdAt: document.createdAt,
+                editedByName: document.editedByName,
+                editedAt: document.editedAt
+            )
         }
         .navigationTitle(document.title.isEmpty ? "Document" : document.title)
         .navigationBarTitleDisplayMode(.inline)
@@ -256,6 +272,7 @@ struct HomeDocumentDetailView: View {
                     document.attachmentData = pdfData
                     document.attachmentName = "Scanned Document.pdf"
                     document.attachmentContentType = "pdf"
+                    stampEdited()
                     try? viewContext.save()
                 }
                 showingScanner = false
@@ -273,6 +290,7 @@ struct HomeDocumentDetailView: View {
             SelectTasksForDocumentView(selectedTaskIDs: $linkedTaskIDs, tasks: homeTasks)
                 .onDisappear {
                     document.linkedTaskIDs = linkedTaskIDs
+                    stampEdited()
                     try? viewContext.save()
                 }
         }
@@ -280,6 +298,7 @@ struct HomeDocumentDetailView: View {
             SelectProjectsForDocumentView(selectedProjectIDs: $linkedProjectIDs, projects: homeProjects)
                 .onDisappear {
                     document.linkedProjectIDs = linkedProjectIDs
+                    stampEdited()
                     try? viewContext.save()
                 }
         }
@@ -293,7 +312,13 @@ struct HomeDocumentDetailView: View {
         document.attachmentData = data
         document.attachmentName = name
         document.attachmentContentType = url.pathExtension
+        stampEdited()
         try? viewContext.save()
+    }
+
+    private func stampEdited() {
+        document.editedByName = authService.displayName
+        document.editedAt = Date()
     }
 }
 
@@ -304,6 +329,7 @@ struct AddHomeDocumentView: View {
     @Environment(\.dismiss) private var dismiss
     @Environment(HomeManager.self) private var homeManager
     @Environment(CloudSharingService.self) private var cloudSharingService
+    @Environment(AuthService.self) private var authService
     @FetchRequest(sortDescriptors: [SortDescriptor(\.name)]) private var allTasks: FetchedResults<MaintenanceTask>
     @FetchRequest(sortDescriptors: [SortDescriptor(\.name)]) private var allAppliances: FetchedResults<Appliance>
     @FetchRequest(sortDescriptors: [SortDescriptor(\.title)]) private var allProjects: FetchedResults<RepairProject>
@@ -507,6 +533,7 @@ struct AddHomeDocumentView: View {
         doc.linkedProjectIDs = linkedProjectIDs
         // Scalar mirrors — always safe to set regardless of store.
         doc.homeIDString = home?.id.uuidString
+        doc.createdByName = authService.displayName
         if linkedAppliance == nil {
             doc.sectionIDString = section.id.uuidString
         }
