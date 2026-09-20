@@ -22,7 +22,14 @@ public final class MaintenanceTask: NSManagedObject, Identifiable {
     @NSManaged public var createdAt: Date
     @NSManaged public var homeIDString: String?
     @NSManaged public var sourceProjectIDString: String?
+    /// EKEvent.eventIdentifier for this task's calendar reminder, if one has been created —
+    /// lets CalendarService update the existing event in place (name, due date, recurrence)
+    /// instead of leaving a stale duplicate behind whenever the task is edited.
+    @NSManaged public var calendarEventIdentifier: String?
     @NSManaged private var taskDocumentsJSON: String?
+    @NSManaged public var createdByName: String?
+    @NSManaged public var editedByName: String?
+    @NSManaged public var editedAt: Date?
 
     // Relationships
     @NSManaged public var home: Home?

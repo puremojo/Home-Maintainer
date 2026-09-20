@@ -204,7 +204,11 @@ class GeminiService {
                     values: ["daily", "weekly", "biweekly", "monthly", "quarterly", "biannually", "annually"],
                     description: "How often the task should be performed"
                 ),
-            ]
+                "applianceName": .string(
+                    description: "If this task is for a specific appliance the user already has (see the Appliances list in context), the exact name of that appliance so the task can be linked to it. Omit if the task isn't tied to a specific appliance."
+                ),
+            ],
+            optionalParameters: ["applianceName"]
         ),
         FunctionDeclaration(
             name: "create_appliance",

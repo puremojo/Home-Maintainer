@@ -333,6 +333,14 @@ struct RepairProjectDetailView: View {
                     LinkedText(text: project.notes)
                 }
             }
+
+            ActivityLogSection(
+                itemName: project.title,
+                createdByName: project.createdByName,
+                createdAt: project.createdAt,
+                editedByName: project.editedByName,
+                editedAt: project.editedAt
+            )
         }
         .navigationTitle(project.title)
         .navigationBarTitleDisplayMode(.inline)
@@ -596,6 +604,7 @@ struct InvoiceRowView: View {
 struct AddProjectSubTaskView: View {
     @Environment(\.managedObjectContext) private var viewContext
     @Environment(\.dismiss) private var dismiss
+    @Environment(AuthService.self) private var authService
 
     let project: RepairProject
 
@@ -639,6 +648,7 @@ struct AddProjectSubTaskView: View {
         )
         task.home = project.home
         task.homeIDString = project.homeIDString
+        task.createdByName = authService.displayName
         task.sourceProject = project
         task.sourceProjectIDString = project.id.uuidString
 
@@ -662,6 +672,7 @@ struct AddProjectSubTaskView: View {
 struct AddWorkDateView: View {
     @Environment(\.managedObjectContext) private var viewContext
     @Environment(\.dismiss) private var dismiss
+    @Environment(HomeManager.self) private var homeManager
 
     var project: RepairProject
 
@@ -721,8 +732,9 @@ struct AddWorkDateView: View {
         try? viewContext.save()
 
         let title = project.title
+        let homeName = homeManager.currentHome?.name ?? "Home"
         Task {
-            await CalendarService.shared.addWorkDateEvent(workDate: workDate, projectTitle: title)
+            await CalendarService.shared.addWorkDateEvent(workDate: workDate, projectTitle: title, homeName: homeName)
         }
 
         dismiss()
@@ -734,6 +746,7 @@ struct AddWorkDateView: View {
 struct EditRepairProjectView: View {
     @Environment(\.dismiss) private var dismiss
     @Environment(\.managedObjectContext) private var viewContext
+    @Environment(AuthService.self) private var authService
     var project: RepairProject
 
     @State private var title: String
@@ -838,6 +851,8 @@ struct EditRepairProjectView: View {
                         project.startDate = startDate
                         project.completionDate = completionDate
                         project.totalCost = Double(totalCostText) ?? 0
+                        project.editedByName = authService.displayName
+                        project.editedAt = Date()
                         try? viewContext.save()
                         dismiss()
                     }

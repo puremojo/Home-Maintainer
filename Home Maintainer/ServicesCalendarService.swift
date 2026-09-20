@@ -14,11 +14,12 @@ final class CalendarService {
 
     // MARK: - Public API
 
-    func addWorkDateEvent(workDate: ProjectWorkDate, projectTitle: String) async {
+    func addWorkDateEvent(workDate: ProjectWorkDate, projectTitle: String, homeName: String) async {
         guard await requestAccess() else { return }
 
         let event = EKEvent(eventStore: store)
-        event.title = workDate.label.isEmpty ? projectTitle : "\(workDate.label) — \(projectTitle)"
+        let base = workDate.label.isEmpty ? projectTitle : "\(workDate.label) — \(projectTitle)"
+        event.title = "\(base) (\(homeName))"
         event.startDate = workDate.scheduledDate
         event.endDate = endDate(for: workDate)
         event.calendar = store.defaultCalendarForNewEvents
@@ -27,24 +28,54 @@ final class CalendarService {
         try? store.save(event, span: .thisEvent)
     }
 
-    func addTaskEvent(task: MaintenanceTask) async {
-        guard await requestAccess() else { return }
-        guard let nextDue = task.nextDue else { return } // .once tasks have no due date
+    // Takes plain values rather than the MaintenanceTask itself — task is an NSManagedObject
+    // tied to a main-queue-confined context, and requestAccess() below may resume its
+    // continuation off the main thread, so any CoreData property reads need to happen before
+    // this call, not after.
+    //
+    // Creates a new calendar event the first time (existingIdentifier is nil), or updates the
+    // same event in place on every subsequent call (e.g. after the task is renamed or its
+    // frequency changes) so the calendar never drifts from the task's current name/date —
+    // rather than leaving a stale duplicate behind. Returns the event identifier to persist
+    // back onto the task (nil if no event exists/was created, e.g. a .once task with no due
+    // date, or if calendar access was denied).
+    // homeName is always included in the title (not just when ambiguous) so tasks from
+    // different homes landing on the same calendar day are still easy to tell apart at a glance.
+    @discardableResult
+    func syncTaskEvent(
+        existingIdentifier: String?,
+        name: String,
+        nextDue: Date?,
+        frequency: TaskFrequency,
+        homeName: String
+    ) async -> String? {
+        guard await requestAccess() else { return existingIdentifier }
 
-        let event = EKEvent(eventStore: store)
-        event.title = task.name
+        guard let nextDue else {
+            // No due date (e.g. switched to .once) — remove any event that previously existed.
+            if let existingIdentifier, let stale = store.event(withIdentifier: existingIdentifier) {
+                try? store.remove(stale, span: .thisEvent)
+            }
+            return nil
+        }
+
+        let event = existingIdentifier.flatMap { store.event(withIdentifier: $0) } ?? EKEvent(eventStore: store)
+        event.title = "\(name) (\(homeName))"
         event.startDate = Calendar.current.startOfDay(for: nextDue)
         event.endDate = Calendar.current.startOfDay(for: nextDue)
         event.isAllDay = true
-        event.calendar = store.defaultCalendarForNewEvents
-
-        if let rule = recurrenceRule(for: task.frequency) {
-            event.recurrenceRules = [rule]
+        if event.calendar == nil {
+            event.calendar = store.defaultCalendarForNewEvents
         }
 
-        event.addAlarm(EKAlarm(relativeOffset: -86400)) // 1 day before
+        event.recurrenceRules = recurrenceRule(for: frequency).map { [$0] }
 
-        try? store.save(event, span: .thisEvent)
+        if event.alarms?.isEmpty != false {
+            event.addAlarm(EKAlarm(relativeOffset: -86400)) // 1 day before
+        }
+
+        guard (try? store.save(event, span: .thisEvent)) != nil else { return existingIdentifier }
+        return event.eventIdentifier
     }
 
     // MARK: - Private Helpers

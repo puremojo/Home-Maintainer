@@ -554,7 +554,8 @@ struct ChatView: View {
             return "Failed to parse task parameters"
         }
 
-        await MainActor.run {
+        var linkedApplianceName: String?
+        let (task, taskName, nextDue, frequency, homeName): (MaintenanceTask, String, Date?, TaskFrequency, String) = await MainActor.run {
             let frequency: TaskFrequency
             switch params.frequency {
             case "daily": frequency = .daily
@@ -567,21 +568,43 @@ struct ChatView: View {
             default: frequency = .monthly
             }
 
+            let currentHome = homeManager.currentHome
+            let homeIDStr = currentHome?.id.uuidString
+            var matchedAppliance: Appliance?
+            if let applianceName = params.applianceName?.trimmingCharacters(in: .whitespacesAndNewlines), !applianceName.isEmpty {
+                matchedAppliance = appliances.first {
+                    !$0.isDeleted && $0.homeIDString == homeIDStr
+                        && $0.name.caseInsensitiveCompare(applianceName) == .orderedSame
+                }
+                linkedApplianceName = matchedAppliance?.name
+            }
+
             let task = MaintenanceTask.make(
                 name: params.name,
                 description: params.description,
                 frequency: frequency,
+                appliance: matchedAppliance,
                 in: viewContext
             )
-            let currentHome = homeManager.currentHome
-            task.homeIDString = currentHome?.id.uuidString
+            task.homeIDString = homeIDStr
+            task.createdByName = authService.displayName
             if let currentHome, !cloudSharingService.isInSharedStore(entityName: "Home", id: currentHome.id) {
                 task.home = currentHome
             }
             try? viewContext.save()
+            return (task, task.name, task.nextDue, task.frequency, currentHome?.name ?? "Home")
         }
 
-        return "✅ Created task: \(params.name) (scheduled \(params.frequency))"
+        let identifier = await CalendarService.shared.syncTaskEvent(
+            existingIdentifier: nil, name: taskName, nextDue: nextDue, frequency: frequency, homeName: homeName
+        )
+        await MainActor.run {
+            task.calendarEventIdentifier = identifier
+            try? viewContext.save()
+        }
+
+        let linkSuffix = linkedApplianceName.map { " — linked to \($0)" } ?? ""
+        return "✅ Created task: \(params.name) (scheduled \(params.frequency))\(linkSuffix)"
     }
 
     private func createAppliance(from jsonString: String) async -> String {
@@ -613,6 +636,7 @@ struct ChatView: View {
             )
             let currentHome = homeManager.currentHome
             appliance.homeIDString = currentHome?.id.uuidString
+            appliance.createdByName = authService.displayName
             if let currentHome, !cloudSharingService.isInSharedStore(entityName: "Home", id: currentHome.id) {
                 appliance.home = currentHome
             }
@@ -728,6 +752,7 @@ struct ChatView: View {
             provider.businessTypes = place.types.isEmpty ? nil : place.types
             let currentHome = homeManager.currentHome
             provider.homeIDString = currentHome?.id.uuidString
+            provider.createdByName = authService.displayName
             if let currentHome, !cloudSharingService.isInSharedStore(entityName: "Home", id: currentHome.id) {
                 provider.home = currentHome
             }
@@ -773,6 +798,7 @@ struct ChatView: View {
 
             let currentHome = homeManager.currentHome
             provider.homeIDString = currentHome?.id.uuidString
+            provider.createdByName = authService.displayName
             if let currentHome, !cloudSharingService.isInSharedStore(entityName: "Home", id: currentHome.id) {
                 provider.home = currentHome
             }
@@ -820,6 +846,7 @@ struct ChatView: View {
             )
             let currentHome = homeManager.currentHome
             project.homeIDString = currentHome?.id.uuidString
+            project.createdByName = authService.displayName
             if let currentHome, !cloudSharingService.isInSharedStore(entityName: "Home", id: currentHome.id) {
                 project.home = currentHome
             }
@@ -846,6 +873,7 @@ struct ChatView: View {
             let task = MaintenanceTask.make(name: params.name, description: params.description, frequency: .once, in: viewContext)
             let currentHome = homeManager.currentHome
             task.homeIDString = currentHome?.id.uuidString
+            task.createdByName = authService.displayName
             if let currentHome, !cloudSharingService.isInSharedStore(entityName: "Home", id: currentHome.id) {
                 task.home = currentHome
             }
@@ -1063,6 +1091,7 @@ private struct TaskParams: Codable {
     let name: String
     let description: String
     let frequency: String
+    let applianceName: String?
 }
 
 private struct ApplianceParams: Codable {

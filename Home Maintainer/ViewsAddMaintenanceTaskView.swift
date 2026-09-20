@@ -11,6 +11,7 @@ import CoreData
 struct AddMaintenanceTaskView: View {
     @Environment(\.managedObjectContext) private var viewContext
     @Environment(\.dismiss) private var dismiss
+    @Environment(AuthService.self) private var authService
     @FetchRequest(sortDescriptors: [SortDescriptor(\.name)]) private var appliances: FetchedResults<Appliance>
 
     let home: Home?
@@ -97,6 +98,7 @@ struct AddMaintenanceTaskView: View {
         )
         task.home = home
         task.homeIDString = home?.id.uuidString
+        task.createdByName = authService.displayName
 
         for draft in productDrafts where !draft.isEmpty {
             let product = ProductLink.make(name: draft.name, urlString: draft.urlString,
@@ -106,7 +108,19 @@ struct AddMaintenanceTaskView: View {
 
         try? viewContext.save()
 
-        Task { await CalendarService.shared.addTaskEvent(task: task) }
+        let homeName = home?.name ?? "Home"
+        let taskName = task.name
+        let nextDue = task.nextDue
+        let frequency = task.frequency
+        Task {
+            let identifier = await CalendarService.shared.syncTaskEvent(
+                existingIdentifier: nil, name: taskName, nextDue: nextDue, frequency: frequency, homeName: homeName
+            )
+            await MainActor.run {
+                task.calendarEventIdentifier = identifier
+                try? viewContext.save()
+            }
+        }
         dismiss()
     }
 }

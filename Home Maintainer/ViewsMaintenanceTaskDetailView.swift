@@ -49,6 +49,13 @@ struct MaintenanceTaskDetailView: View {
             } else {
                 maintenanceTaskSections
             }
+            ActivityLogSection(
+                itemName: task.name,
+                createdByName: task.createdByName,
+                createdAt: task.createdAt,
+                editedByName: task.editedByName,
+                editedAt: task.editedAt
+            )
         }
         .navigationTitle(task.name)
         .navigationBarTitleDisplayMode(.inline)
@@ -507,6 +514,8 @@ struct EditRecordNotesView: View {
 struct EditMaintenanceTaskView: View {
     @Environment(\.dismiss) private var dismiss
     @Environment(\.managedObjectContext) private var viewContext
+    @Environment(HomeManager.self) private var homeManager
+    @Environment(AuthService.self) private var authService
     @FetchRequest(sortDescriptors: [SortDescriptor(\.name)]) private var appliances: FetchedResults<Appliance>
     let task: MaintenanceTask
 
@@ -593,7 +602,26 @@ struct EditMaintenanceTaskView: View {
         if task.safeFrequency != selectedFrequency {
             task.updateFrequency(selectedFrequency)
         }
+        task.editedByName = authService.displayName
+        task.editedAt = Date()
         try? viewContext.save()
+
+        let existingIdentifier = task.calendarEventIdentifier
+        let taskName = task.name
+        let nextDue = task.nextDue
+        let frequency = task.frequency
+        let homeName = homeManager.currentHome?.name ?? "Home"
+        Task {
+            let identifier = await CalendarService.shared.syncTaskEvent(
+                existingIdentifier: existingIdentifier, name: taskName, nextDue: nextDue, frequency: frequency, homeName: homeName
+            )
+            await MainActor.run {
+                if task.calendarEventIdentifier != identifier {
+                    task.calendarEventIdentifier = identifier
+                    try? viewContext.save()
+                }
+            }
+        }
     }
 }
 
