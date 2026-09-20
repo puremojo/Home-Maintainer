@@ -2,9 +2,16 @@
 //  GeminiService.swift
 //  Home Maintainer
 //
+//  Calls Gemini directly from the device via Firebase AI Logic — no custom Cloud Function
+//  proxies chat content, so hAIndyman conversations and memory never transit our backend.
+//  Quota enforcement stays server-side (checkQuota/reportUsage), but is content-blind: those
+//  functions only ever see token counts, never prompts or responses.
+//
 
 import Foundation
 import UIKit
+import CoreData
+import FirebaseAI
 import FirebaseFunctions
 
 @Observable
@@ -12,6 +19,18 @@ class GeminiService {
     let isConfigured = true
 
     private let functions = Functions.functions()
+    private static let modelName = "gemini-3.5-flash"
+
+    // A max-output ceiling plus a per-image constant, used only to produce a conservative
+    // pre-flight token estimate for checkQuota — the real cost is trued up via reportUsage
+    // once the actual response comes back with usageMetadata.
+    private static let maxOutputTokenEstimate = 2048
+    private static let perImageTokenEstimate = 260
+    private static let memorySynthesisTokenEstimate = 800
+
+    private var viewContext: NSManagedObjectContext? { CloudSharingService.shared?.viewContext }
+
+    // MARK: - Public API
 
     func sendMessage(
         _ message: String,
@@ -19,91 +38,64 @@ class GeminiService {
         context: String = "",
         onToolCall: ((ToolCall) async -> String)? = nil
     ) async throws -> String {
-        var userParts: [[String: Any]] = []
-
         let fullText: String
         if !context.isEmpty {
             fullText = "Context about this home: \(context)\n\n\(message.isEmpty ? "What do you see in this image?" : message)"
         } else {
             fullText = message.isEmpty ? "What do you see in this image?" : message
         }
-        userParts.append(["text": fullText])
 
+        var userParts: [any Part] = [TextPart(fullText)]
         for imageData in images {
             let resized = resizeImage(imageData, maxDimension: 1024)
-            userParts.append([
-                "inlineData": [
-                    "mimeType": "image/jpeg",
-                    "data": resized.base64EncodedString()
-                ]
-            ])
+            userParts.append(InlineDataPart(data: resized, mimeType: "image/jpeg"))
         }
 
-        // History in Gemini REST API content format — stays on client for multi-turn function calls
-        var history: [[String: Any]] = [["role": "user", "parts": userParts]]
+        let estimatedTokens = estimateTokens(text: fullText, imageCount: images.count)
+            + Self.memorySynthesisTokenEstimate
+        try await checkQuota(estimatedTokens: estimatedTokens)
+
+        let memory = currentMemoryText()
+        let model = Self.makeChatModel(memory: memory)
+        var history: [ModelContent] = [ModelContent(role: "user", parts: userParts)]
+        var totalTokensUsed = 0
 
         while true {
-            let callable = functions.httpsCallable("geminiChat")
-            let result: HTTPSCallableResult
+            let response = try await model.generateContent(history)
+            totalTokensUsed += response.usageMetadata?.totalTokenCount ?? 0
 
-            do {
-                result = try await callable.call(["contents": history])
-            } catch let error as NSError {
-                if error.domain == "com.firebase.functions" && error.code == 8 {
-                    throw GeminiError.quotaExceeded
-                }
-                throw error
-            }
-
-            guard
-                let data = result.data as? [String: Any],
-                let candidates = data["candidates"] as? [[String: Any]],
-                let firstCandidate = candidates.first,
-                let content = firstCandidate["content"] as? [String: Any],
-                let parts = content["parts"] as? [[String: Any]]
-            else {
+            guard let modelTurn = response.candidates.first?.content else {
                 throw GeminiError.noContent
             }
+            history.append(ModelContent(role: "model", parts: modelTurn.parts))
 
-            history.append(["role": "model", "parts": parts])
-
-            let functionCalls: [(name: String, args: [String: Any])] = parts.compactMap { part in
-                guard let fc = part["functionCall"] as? [String: Any],
-                      let name = fc["name"] as? String,
-                      let args = fc["args"] as? [String: Any]
-                else { return nil }
-                return (name: name, args: args)
-            }
-
+            let functionCalls = response.functionCalls
             if functionCalls.isEmpty {
-                let text = parts.compactMap { $0["text"] as? String }.joined()
-                guard !text.isEmpty else { throw GeminiError.noContent }
+                guard let text = response.text, !text.isEmpty else { throw GeminiError.noContent }
+                await finishExchange(
+                    memory: memory, userMessage: message, assistantResponse: text,
+                    tokensSoFar: totalTokensUsed, reservedAmount: estimatedTokens
+                )
                 return text
             }
 
             guard let onToolCall else { break }
 
-            var responseParts: [[String: Any]] = []
+            var responseParts: [any Part] = []
             for fc in functionCalls {
-                let argsString = (try? JSONSerialization.data(withJSONObject: fc.args))
+                let argsString = (try? JSONEncoder().encode(fc.args))
                     .flatMap { String(data: $0, encoding: .utf8) } ?? "{}"
-
                 let toolCall = ToolCall(
-                    id: UUID().uuidString,
+                    id: fc.functionId ?? UUID().uuidString,
                     type: "function",
                     function: .init(name: fc.name, arguments: argsString)
                 )
                 let toolResult = await onToolCall(toolCall)
-
-                responseParts.append([
-                    "functionResponse": [
-                        "name": fc.name,
-                        "response": ["result": toolResult]
-                    ]
-                ])
+                responseParts.append(FunctionResponsePart(
+                    name: fc.name, response: ["result": .string(toolResult)], functionId: fc.functionId
+                ))
             }
-
-            history.append(["role": "user", "parts": responseParts])
+            history.append(ModelContent(role: "user", parts: responseParts))
         }
 
         throw GeminiError.noContent
@@ -129,60 +121,222 @@ class GeminiService {
         Respond with only the JSON array, no markdown, no code fences, no explanation.
         """
 
-        let contents: [[String: Any]] = [
-            ["role": "user", "parts": [["text": prompt]]]
-        ]
+        let estimatedTokens = estimateTokens(text: prompt, imageCount: 0)
+        try await checkQuota(estimatedTokens: estimatedTokens)
 
-        let callable = functions.httpsCallable("geminiChat")
-        let result: HTTPSCallableResult
+        let model = FirebaseAI.firebaseAI(backend: .googleAI()).generativeModel(modelName: Self.modelName)
+        let response = try await model.generateContent(prompt)
+        let tokensUsed = response.usageMetadata?.totalTokenCount ?? 0
+        await reportUsage(actualTokens: tokensUsed, reservedAmount: estimatedTokens)
 
+        guard let text = response.text, !text.isEmpty else { throw GeminiError.noContent }
+
+        let jsonText = text
+            .replacingOccurrences(of: "```json", with: "")
+            .replacingOccurrences(of: "```", with: "")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        if let jsonData = jsonText.data(using: .utf8),
+           let suggestions = try? JSONDecoder().decode([TaskSuggestion].self, from: jsonData),
+           !suggestions.isEmpty {
+            return suggestions
+        }
+
+        throw GeminiError.noContent
+    }
+
+    // MARK: - Model construction
+
+    private static func makeChatModel(memory: String) -> GenerativeModel {
+        let systemInstruction = memory.isEmpty
+            ? Self.systemPrompt
+            : "\(Self.systemPrompt)\n\nWhat you remember about this user:\n\(memory)"
+        return FirebaseAI.firebaseAI(backend: .googleAI()).generativeModel(
+            modelName: modelName,
+            tools: [Self.tool],
+            systemInstruction: ModelContent(role: "system", parts: [TextPart(systemInstruction)])
+        )
+    }
+
+    private static let systemPrompt = """
+    You are hAIndyman, a helpful AI assistant specialized in home maintenance. You help users with:
+    - Creating and managing maintenance tasks
+    - Appliance care and troubleshooting
+    - Finding local service providers
+    - Managing repair projects
+    - General home improvement advice
+    - Analyzing images of appliances, repairs, or maintenance issues
+
+    When users send images, analyze them and provide helpful advice about what you see.
+    When users ask you to create tasks, add appliances, or make changes, use the available tools to actually perform these actions.
+
+    Be concise, practical, and friendly.
+    """
+
+    private static let tool: Tool = .functionDeclarations([
+        FunctionDeclaration(
+            name: "create_maintenance_task",
+            description: "Create a new maintenance task in the user's home maintenance app",
+            parameters: [
+                "name": .string(description: "The name of the task (e.g., 'Change HVAC Filter')"),
+                "description": .string(description: "Description of what needs to be done"),
+                "frequency": .enumeration(
+                    values: ["daily", "weekly", "biweekly", "monthly", "quarterly", "biannually", "annually"],
+                    description: "How often the task should be performed"
+                ),
+            ]
+        ),
+        FunctionDeclaration(
+            name: "create_appliance",
+            description: "Add a new appliance to track in the user's home",
+            parameters: [
+                "name": .string(description: "Name of the appliance (e.g., 'Kitchen Refrigerator')"),
+                "type": .enumeration(
+                    values: ["refrigerator", "dishwasher", "washer", "dryer", "oven", "microwave",
+                             "hvac", "waterHeater", "garbageDisposal", "other"],
+                    description: "Type of appliance"
+                ),
+                "manufacturer": .string(description: "Manufacturer name"),
+            ],
+            optionalParameters: ["manufacturer"]
+        ),
+        FunctionDeclaration(
+            name: "search_local_providers",
+            description: "Search for local service providers near the user (plumbers, electricians, etc.)",
+            parameters: [
+                "category": .enumeration(
+                    values: ["electrician", "plumber", "generalContractor", "roofer", "hvac", "carpenter",
+                             "painter", "landscaper", "handyman", "appliance"],
+                    description: "Type of service provider to search for"
+                ),
+            ]
+        ),
+        FunctionDeclaration(
+            name: "save_search_result",
+            description: "Save a specific numbered result from the most recent search_local_providers call to the user's saved providers. Use this (not add_service_provider) whenever the user asks to add a result by number from a local search.",
+            parameters: [
+                "resultNumber": .integer(description: "The result number to save (1, 2, 3… as listed in the search output)"),
+            ]
+        ),
+        FunctionDeclaration(
+            name: "add_service_provider",
+            description: "Add a service provider by name/details when NOT coming from a local search result. Include ALL known details — phone, address, website, and rating.",
+            parameters: [
+                "name": .string(description: "Business name"),
+                "category": .enumeration(
+                    values: ["electrician", "plumber", "generalContractor", "roofer", "hvac", "carpenter",
+                             "painter", "landscaper", "handyman", "appliance"],
+                    description: "Type of service"
+                ),
+                "phoneNumber": .string(description: "Phone number"),
+                "address": .string(description: "Full street address"),
+                "website": .string(description: "Website URL"),
+                "rating": .double(description: "Google rating (e.g. 4.7)"),
+            ],
+            optionalParameters: ["phoneNumber", "address", "website", "rating"]
+        ),
+        FunctionDeclaration(
+            name: "create_repair_project",
+            description: "Create a new repair or home improvement project to track",
+            parameters: [
+                "title": .string(description: "Project title (e.g., 'Bathroom Renovation', 'Roof Repair')"),
+                "description": .string(description: "Description of the work needed"),
+                "category": .enumeration(
+                    values: ["electrician", "plumber", "generalContractor", "roofer", "hvac", "carpenter",
+                             "painter", "landscaper", "handyman", "appliance", "other"],
+                    description: "Type of work"
+                ),
+                "priority": .enumeration(values: ["low", "medium", "high"], description: "How urgently the project needs to be done"),
+            ],
+            optionalParameters: ["priority"]
+        ),
+    ])
+
+    // MARK: - Memory (client-side synthesis, stored in CoreData → synced via CloudKit's personal zone)
+
+    private func currentMemoryText() -> String {
+        guard let ctx = viewContext else { return "" }
+        return ctx.performAndWait { UserMemory.fetchOrCreate(in: ctx).content ?? "" }
+    }
+
+    private func saveMemory(_ text: String) {
+        guard let ctx = viewContext else { return }
+        ctx.performAndWait {
+            let memory = UserMemory.fetchOrCreate(in: ctx)
+            memory.content = text
+            memory.updatedAt = Date()
+            try? ctx.save()
+        }
+    }
+
+    /// Regenerates the memory summary and reports final token usage. Runs after the main
+    /// response is already available, so a failure here never blocks returning the chat reply.
+    private func finishExchange(
+        memory: String, userMessage: String, assistantResponse: String,
+        tokensSoFar: Int, reservedAmount: Int
+    ) async {
+        var totalTokens = tokensSoFar
+        if let (newMemory, memoryTokens) = await synthesizeMemory(
+            current: memory, userMessage: userMessage, assistantResponse: assistantResponse
+        ) {
+            totalTokens += memoryTokens
+            saveMemory(newMemory)
+        }
+        await reportUsage(actualTokens: totalTokens, reservedAmount: reservedAmount)
+    }
+
+    private func synthesizeMemory(
+        current: String, userMessage: String, assistantResponse: String
+    ) async -> (memory: String, tokensUsed: Int)? {
+        guard !userMessage.isEmpty || !assistantResponse.isEmpty else { return nil }
+
+        let prompt = """
+        You are a memory extraction assistant. Extract personal facts about the user worth remembering for future home maintenance conversations.
+
+        Current memory: "\(current.isEmpty ? "none" : current)"
+
+        New exchange:
+        User: "\(String(userMessage.prefix(400)))"
+        Assistant: "\(String(assistantResponse.prefix(400)))"
+
+        Extract any NEW facts about: user's name, home type/age, location, family, appliances owned, recurring issues, or preferences relevant to home maintenance.
+
+        Reply ONLY with a concise updated memory (under 500 characters). If nothing new, reply with the current memory unchanged. No explanations or greetings.
+        """
+
+        let model = FirebaseAI.firebaseAI(backend: .googleAI()).generativeModel(modelName: Self.modelName)
+        guard let response = try? await model.generateContent(prompt) else { return nil }
+        let tokensUsed = response.usageMetadata?.totalTokenCount ?? 0
+        guard let text = response.text else { return (current, tokensUsed) }
+
+        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty, trimmed != current else { return (current, tokensUsed) }
+        return (trimmed, tokensUsed)
+    }
+
+    // MARK: - Quota (content-blind — these functions only ever see token counts)
+
+    private func estimateTokens(text: String, imageCount: Int) -> Int {
+        (text.count / 4) + (imageCount * Self.perImageTokenEstimate) + Self.maxOutputTokenEstimate
+    }
+
+    private func checkQuota(estimatedTokens: Int) async throws {
+        let callable = functions.httpsCallable("checkQuota")
         do {
-            result = try await callable.call(["contents": contents])
+            _ = try await callable.call(["estimatedTokens": estimatedTokens])
         } catch let error as NSError {
             if error.domain == "com.firebase.functions" && error.code == 8 {
                 throw GeminiError.quotaExceeded
             }
             throw error
         }
-
-        guard
-            let data = result.data as? [String: Any],
-            let candidates = data["candidates"] as? [[String: Any]],
-            let content = candidates.first?["content"] as? [String: Any],
-            let responseParts = content["parts"] as? [[String: Any]]
-        else { throw GeminiError.noContent }
-
-        let text = responseParts.compactMap { $0["text"] as? String }.joined()
-
-        if !text.isEmpty {
-            let jsonText = text
-                .replacingOccurrences(of: "```json", with: "")
-                .replacingOccurrences(of: "```", with: "")
-                .trimmingCharacters(in: .whitespacesAndNewlines)
-            if let jsonData = jsonText.data(using: .utf8),
-               let suggestions = try? JSONDecoder().decode([TaskSuggestion].self, from: jsonData),
-               !suggestions.isEmpty {
-                return suggestions
-            }
-        }
-
-        // Fallback: model called tools instead of returning JSON — extract task args directly
-        var suggestions: [TaskSuggestion] = []
-        for part in responseParts {
-            guard let fc = part["functionCall"] as? [String: Any],
-                  let fcName = fc["name"] as? String,
-                  fcName == "create_maintenance_task",
-                  let args = fc["args"] as? [String: Any],
-                  let taskName = args["name"] as? String,
-                  let frequency = args["frequency"] as? String
-            else { continue }
-            let description = args["description"] as? String ?? ""
-            suggestions.append(TaskSuggestion(name: taskName, description: description, frequency: frequency, products: []))
-        }
-
-        guard !suggestions.isEmpty else { throw GeminiError.noContent }
-        return suggestions
     }
+
+    private func reportUsage(actualTokens: Int, reservedAmount: Int) async {
+        let callable = functions.httpsCallable("reportUsage")
+        _ = try? await callable.call(["actualTokens": actualTokens, "reservedAmount": reservedAmount])
+    }
+
+    // MARK: - Image helpers
 
     private func resizeImage(_ data: Data, maxDimension: CGFloat) -> Data {
         guard let image = UIImage(data: data),

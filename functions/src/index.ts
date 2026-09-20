@@ -1,7 +1,6 @@
 import { onCall, HttpsError } from "firebase-functions/v2/https";
 import { getFirestore, FieldValue, Timestamp } from "firebase-admin/firestore";
 import { initializeApp } from "firebase-admin/app";
-import { GoogleGenerativeAI } from "@google/generative-ai";
 
 initializeApp();
 
@@ -12,248 +11,116 @@ const TIER_LIMITS: Record<string, number> = {
   pro: 5_000_000,
 };
 
-const SYSTEM_PROMPT = `You are hAIndyman, a helpful AI assistant specialized in home maintenance. You help users with:
-- Creating and managing maintenance tasks
-- Appliance care and troubleshooting
-- Finding local service providers
-- Managing repair projects
-- General home improvement advice
-- Analyzing images of appliances, repairs, or maintenance issues
-
-When users send images, analyze them and provide helpful advice about what you see.
-When users ask you to create tasks, add appliances, or make changes, use the available tools to actually perform these actions.
-
-Be concise, practical, and friendly.`;
-
-const TOOLS = [
-  {
-    functionDeclarations: [
-      {
-        name: "create_maintenance_task",
-        description: "Create a new maintenance task in the user's home maintenance app",
-        parameters: {
-          type: "OBJECT",
-          properties: {
-            name: { type: "STRING", description: "The name of the task (e.g., 'Change HVAC Filter')" },
-            description: { type: "STRING", description: "Description of what needs to be done" },
-            frequency: {
-              type: "STRING",
-              enum: ["daily", "weekly", "biweekly", "monthly", "quarterly", "biannually", "annually"],
-              description: "How often the task should be performed",
-            },
-          },
-          required: ["name", "description", "frequency"],
-        },
-      },
-      {
-        name: "create_appliance",
-        description: "Add a new appliance to track in the user's home",
-        parameters: {
-          type: "OBJECT",
-          properties: {
-            name: { type: "STRING", description: "Name of the appliance (e.g., 'Kitchen Refrigerator')" },
-            type: {
-              type: "STRING",
-              enum: ["refrigerator", "dishwasher", "washer", "dryer", "oven", "microwave", "hvac", "waterHeater", "garbageDisposal", "other"],
-              description: "Type of appliance",
-            },
-            manufacturer: { type: "STRING", description: "Manufacturer name" },
-          },
-          required: ["name", "type"],
-        },
-      },
-      {
-        name: "search_local_providers",
-        description: "Search for local service providers near the user (plumbers, electricians, etc.)",
-        parameters: {
-          type: "OBJECT",
-          properties: {
-            category: {
-              type: "STRING",
-              enum: ["electrician", "plumber", "generalContractor", "roofer", "hvac", "carpenter", "painter", "landscaper", "handyman", "appliance"],
-              description: "Type of service provider to search for",
-            },
-          },
-          required: ["category"],
-        },
-      },
-      {
-        name: "save_search_result",
-        description: "Save a specific numbered result from the most recent search_local_providers call to the user's saved providers. Use this (not add_service_provider) whenever the user asks to add a result by number from a local search.",
-        parameters: {
-          type: "OBJECT",
-          properties: {
-            resultNumber: {
-              type: "NUMBER",
-              description: "The result number to save (1, 2, 3… as listed in the search output)",
-            },
-          },
-          required: ["resultNumber"],
-        },
-      },
-      {
-        name: "add_service_provider",
-        description: "Add a service provider by name/details when NOT coming from a local search result. Include ALL known details — phone, address, website, and rating.",
-        parameters: {
-          type: "OBJECT",
-          properties: {
-            name: { type: "STRING", description: "Business name" },
-            category: {
-              type: "STRING",
-              enum: ["electrician", "plumber", "generalContractor", "roofer", "hvac", "carpenter", "painter", "landscaper", "handyman", "appliance"],
-              description: "Type of service",
-            },
-            phoneNumber: { type: "STRING", description: "Phone number" },
-            address: { type: "STRING", description: "Full street address" },
-            website: { type: "STRING", description: "Website URL" },
-            rating: { type: "NUMBER", description: "Google rating (e.g. 4.7)" },
-          },
-          required: ["name", "category"],
-        },
-      },
-      {
-        name: "create_repair_project",
-        description: "Create a new repair or home improvement project to track",
-        parameters: {
-          type: "OBJECT",
-          properties: {
-            title: { type: "STRING", description: "Project title (e.g., 'Bathroom Renovation', 'Roof Repair')" },
-            description: { type: "STRING", description: "Description of the work needed" },
-            category: {
-              type: "STRING",
-              enum: ["electrician", "plumber", "generalContractor", "roofer", "hvac", "carpenter", "painter", "landscaper", "handyman", "appliance", "other"],
-              description: "Type of work",
-            },
-            priority: {
-              type: "STRING",
-              enum: ["low", "medium", "high"],
-              description: "How urgently the project needs to be done",
-            },
-          },
-          required: ["title", "description", "category"],
-        },
-      },
-    ],
-  },
-];
-
-// Proxy a single Gemini generateContent call with token enforcement.
-// The iOS client manages the multi-turn function-calling loop and calls
-// this function once per Gemini API call.
-export const geminiChat = onCall(
-  {
-    enforceAppCheck: true,
-    secrets: ["GEMINI_API_KEY"],
-    timeoutSeconds: 60,
-  },
+// hAIndyman now calls Gemini directly from the device via Firebase AI Logic — chat content,
+// system prompts, and tool schemas live client-side (see GeminiService.swift) and never reach
+// this backend. What remains here is purely the tamper-resistant quota gate: these two
+// functions only ever see token counts, never prompts or responses.
+//
+// checkQuota reserves an estimated token cost atomically (in the same Firestore transaction as
+// the limit check) so concurrent requests can't all read the same not-yet-incremented counter
+// and pass simultaneously. reportUsage trues up that estimate to the real cost once the actual
+// response comes back with usageMetadata.
+export const checkQuota = onCall(
+  { enforceAppCheck: true },
   async (request) => {
     if (!request.auth) {
       throw new HttpsError("unauthenticated", "You must be signed in to use hAIndyman.");
     }
 
-    const uid = request.auth.uid;
+    const { estimatedTokens } = request.data as { estimatedTokens: number };
+    if (typeof estimatedTokens !== "number" || estimatedTokens <= 0) {
+      throw new HttpsError("invalid-argument", "estimatedTokens must be a positive number.");
+    }
+
     const db = getFirestore();
-    const userRef = db.collection("users").doc(uid);
+    const userRef = db.collection("users").doc(request.auth.uid);
 
-    const userDoc = await userRef.get();
-    if (!userDoc.exists) {
-      throw new HttpsError("not-found", "User record not found. Please sign out and sign in again.");
-    }
+    return await db.runTransaction(async (tx) => {
+      const userDoc = await tx.get(userRef);
+      if (!userDoc.exists) {
+        throw new HttpsError("not-found", "User record not found. Please sign out and sign in again.");
+      }
 
-    const userData = userDoc.data()!;
-    const tier = (userData.tier as string) ?? "free";
-    const limit = TIER_LIMITS[tier] ?? TIER_LIMITS.free;
-    let used = (userData.monthlyTokensUsed as number) ?? 0;
-    const aiMemory = (userData.aiMemory as string) ?? "";
+      const userData = userDoc.data()!;
+      const tier = (userData.tier as string) ?? "free";
+      const limit = TIER_LIMITS[tier] ?? TIER_LIMITS.free;
+      let used = (userData.monthlyTokensUsed as number) ?? 0;
 
-    // Reset monthly usage if the billing period has rolled over
-    const resetDate = (userData.tierResetDate as Timestamp)?.toDate();
-    if (resetDate && new Date() > resetDate) {
-      const nextReset = new Date();
-      nextReset.setMonth(nextReset.getMonth() + 1);
-      await userRef.update({ monthlyTokensUsed: 0, tierResetDate: nextReset });
-      used = 0;
-    }
+      // Reset monthly usage if the billing period has rolled over.
+      const updates: Record<string, unknown> = {};
+      const resetDate = (userData.tierResetDate as Timestamp)?.toDate();
+      if (resetDate && new Date() > resetDate) {
+        const nextReset = new Date();
+        nextReset.setMonth(nextReset.getMonth() + 1);
+        updates.tierResetDate = nextReset;
+        used = 0;
+      }
 
-    if (used >= limit) {
-      throw new HttpsError(
-        "resource-exhausted",
-        `Monthly limit of ${limit.toLocaleString()} tokens reached. Upgrade your plan to continue.`
-      );
-    }
+      if (used + estimatedTokens > limit) {
+        throw new HttpsError(
+          "resource-exhausted",
+          `Monthly limit of ${limit.toLocaleString()} tokens reached. Upgrade your plan to continue.`
+        );
+      }
 
-    const { contents } = request.data as { contents: unknown[] };
-    if (!Array.isArray(contents) || contents.length === 0) {
-      throw new HttpsError("invalid-argument", "contents must be a non-empty array.");
-    }
+      // Reserve the estimate now, atomically, so a concurrent call can't slip through before
+      // this one's real usage is reported back via reportUsage.
+      updates.monthlyTokensUsed = used + estimatedTokens;
+      tx.update(userRef, updates);
 
-    const systemInstruction = aiMemory
-      ? `${SYSTEM_PROMPT}\n\nWhat you remember about this user:\n${aiMemory}`
-      : SYSTEM_PROMPT;
-
-    const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY!);
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const model = genAI.getGenerativeModel({
-      model: "gemini-3.5-flash",
-      systemInstruction,
-      tools: TOOLS as any,
+      return { allowed: true, reservedAmount: estimatedTokens };
     });
-
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const result = await model.generateContent({ contents: contents as any });
-    const response = result.response;
-    const tokensUsed = response.usageMetadata?.totalTokenCount ?? 0;
-
-    await userRef.update({ monthlyTokensUsed: FieldValue.increment(tokensUsed) });
-
-    // Extract and update memory in the background — does not block response
-    const lastUserContent = (contents as any[]).slice().reverse().find((c: any) => c.role === "user");
-    const userText: string = (lastUserContent?.parts as any[])?.find((p: any) => typeof p.text === "string")?.text ?? "";
-    const assistantText: string = response.candidates?.[0]?.content?.parts?.find((p: any) => typeof (p as any).text === "string")?.text ?? "";
-    extractAndUpdateMemory(uid, aiMemory, userText, assistantText, process.env.GEMINI_API_KEY!).catch(() => {});
-
-    return {
-      candidates: response.candidates,
-      usageMetadata: response.usageMetadata,
-      tokensUsed,
-      totalUsed: used + tokensUsed,
-      limit,
-    };
   }
 );
 
-async function extractAndUpdateMemory(
-  uid: string,
-  currentMemory: string,
-  userMessage: string,
-  assistantResponse: string,
-  apiKey: string
-): Promise<void> {
-  if (!userMessage && !assistantResponse) return;
-  try {
-    const genAI = new GoogleGenerativeAI(apiKey);
-    const model = genAI.getGenerativeModel({ model: "gemini-3.5-flash" });
-    const prompt = `You are a memory extraction assistant. Extract personal facts about the user worth remembering for future home maintenance conversations.
-
-Current memory: "${currentMemory || "none"}"
-
-New exchange:
-User: "${userMessage.slice(0, 400)}"
-Assistant: "${assistantResponse.slice(0, 400)}"
-
-Extract any NEW facts about: user's name, home type/age, location, family, appliances owned, recurring issues, or preferences relevant to home maintenance.
-
-Reply ONLY with a concise updated memory (under 500 characters). If nothing new, reply with the current memory unchanged. No explanations or greetings.`;
-
-    const memResult = await model.generateContent(prompt);
-    const newMemory = memResult.response.text().trim();
-    if (newMemory && newMemory !== currentMemory) {
-      await getFirestore().collection("users").doc(uid).update({ aiMemory: newMemory });
+// Trues up a checkQuota reservation to the real token cost once the client has the actual
+// usageMetadata from Gemini. delta may be positive (estimate was too low) or negative (too
+// high) — either way this keeps monthlyTokensUsed accurate without ever having seen content.
+export const reportUsage = onCall(
+  { enforceAppCheck: true },
+  async (request) => {
+    if (!request.auth) {
+      throw new HttpsError("unauthenticated", "Must be signed in.");
     }
-  } catch {
-    // Non-fatal
+
+    const { actualTokens, reservedAmount } = request.data as {
+      actualTokens: number;
+      reservedAmount: number;
+    };
+    if (typeof actualTokens !== "number" || typeof reservedAmount !== "number") {
+      throw new HttpsError("invalid-argument", "actualTokens and reservedAmount must be numbers.");
+    }
+
+    const delta = actualTokens - reservedAmount;
+    if (delta !== 0) {
+      const db = getFirestore();
+      await db.collection("users").doc(request.auth.uid).update({
+        monthlyTokensUsed: FieldValue.increment(delta),
+      });
+    }
+
+    return { ok: true };
   }
-}
+);
+
+// One-time cleanup called by the client after it has migrated the legacy aiMemory string into
+// its own local, CloudKit-synced UserMemory record. Removes the plaintext field from Firestore
+// so nothing lingers there post-migration. Content-blind — only deletes, never reads the value.
+export const clearMigratedMemory = onCall(
+  { enforceAppCheck: true },
+  async (request) => {
+    if (!request.auth) {
+      throw new HttpsError("unauthenticated", "Must be signed in.");
+    }
+
+    const db = getFirestore();
+    await db.collection("users").doc(request.auth.uid).update({
+      aiMemory: FieldValue.delete(),
+    });
+
+    return { ok: true };
+  }
+);
 
 // Proxy for Google Places API — keeps the API key server-side.
 // iOS sends { query, latitude?, longitude? } and receives the raw Places response.

@@ -134,6 +134,7 @@ enum AppDataModel {
         let convEnt      = ent("ChatConversation",  ChatConversation.self)
         let msgEnt       = ent("ChatMessageData",   ChatMessageData.self)
         let imgEnt       = ent("ChatImageData",     ChatImageData.self)
+        let userMemEnt   = ent("UserMemory",        UserMemory.self)
 
         // MARK: Attributes
 
@@ -297,11 +298,19 @@ enum AppDataModel {
             strAttr("role", defaultValue: "user"),
             strAttr("content"),
             dateAttr("timestamp"),
+            strAttr("conversationIDString", optional: true),
         ]
 
         imgEnt.properties = [
             uuidAttr("id"),
             dataAttr("imageData", external: true),
+            strAttr("messageIDString", optional: true),
+        ]
+
+        userMemEnt.properties = [
+            uuidAttr("id"),
+            strAttr("content", optional: true),
+            dateAttr("updatedAt"),
         ]
 
         // MARK: Relationships (create both sides, wire inverses together)
@@ -420,7 +429,7 @@ enum AppDataModel {
         model.entities = [
             homeEnt, taskEnt, recordEnt, applianceEnt, photoEnt,
             providerEnt, projectEnt, contactEnt, quoteEnt, invoiceEnt, productEnt,
-            sectionEnt, homeDocEnt, convEnt, msgEnt, imgEnt
+            sectionEnt, homeDocEnt, convEnt, msgEnt, imgEnt, userMemEnt
         ]
 
         return model

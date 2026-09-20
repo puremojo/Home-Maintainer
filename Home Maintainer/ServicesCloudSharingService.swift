@@ -15,6 +15,9 @@ import SwiftUI
 import CoreData
 import CloudKit
 import UIKit
+import FirebaseAuth
+import FirebaseFirestore
+import FirebaseFunctions
 
 @Observable
 final class CloudSharingService: @unchecked Sendable {
@@ -46,7 +49,21 @@ final class CloudSharingService: @unchecked Sendable {
     private static let syncedEntityNames: Set<String> = [
         "Home", "MaintenanceTask", "MaintenanceRecord",
         "Appliance", "ServiceProvider", "RepairProject",
-        "DocumentSection", "HomeDocument"
+        "DocumentSection", "HomeDocument",
+        "ChatConversation", "ChatMessageData", "ChatImageData", "UserMemory"
+    ]
+
+    /// Entities that always sync to the private "personal" zone (never shared with home
+    /// co-owners), regardless of which home they're associated with.
+    private static let personalEntityNames: Set<String> = [
+        "ChatConversation", "ChatMessageData", "ChatImageData", "UserMemory"
+    ]
+
+    /// Fields stored via CKRecord.encryptedValues (CloudKit's built-in field-level encryption,
+    /// keyed by the user's iCloud-protected data — unreadable outside their own account/devices).
+    private static let encryptedFieldsByEntity: [String: Set<String>] = [
+        "ChatMessageData": ["content"],
+        "UserMemory": ["content"],
     ]
 
     // MARK: - Convenience accessor
@@ -93,26 +110,27 @@ final class CloudSharingService: @unchecked Sendable {
 
         let privateURL = baseURL.appendingPathComponent("HomeMaintainer.sqlite")
 
-        // Pre-flight probe: attempt lightweight migration first; only destroy if truly unreadable.
-        // Using migration options here means adding optional attributes (model evolution) won't
-        // trigger a destroy — only a binary-incompatible store will.
+        // Pre-flight compatibility check — intentionally does NOT use migration options.
+        // NSInferMappingModelAutomaticallyOption with a programmatically-built (unversioned)
+        // model can make Core Data internally synthesize a second, separately-registered copy
+        // of the model mid-migration, causing "Multiple NSEntityDescriptions claim the
+        // NSManagedObject subclass 'X'" crashes on the very next fetch. Every synced entity
+        // already has CloudKit as its durable source of truth, so on ANY schema mismatch —
+        // even a purely additive one — we destroy the local store outright and let CloudKit
+        // resync repopulate it, rather than risk that migration path at all.
         if FileManager.default.fileExists(atPath: privateURL.path) {
             let probe = NSPersistentStoreCoordinator(managedObjectModel: model)
-            let migrateOptions: [String: Any] = [
-                NSMigratePersistentStoresAutomaticallyOption: true,
-                NSInferMappingModelAutomaticallyOption: true
-            ]
             if (try? probe.addPersistentStore(ofType: NSSQLiteStoreType, configurationName: nil,
-                                              at: privateURL,
-                                              options: migrateOptions)) == nil {
+                                              at: privateURL, options: nil)) == nil {
                 NSLog("⚠️ Destroying incompatible CoreData store: \(privateURL.lastPathComponent)")
                 try? probe.destroyPersistentStore(at: privateURL, ofType: NSSQLiteStoreType, options: nil)
             }
         }
 
+        // No migration options here either — the probe above guarantees the store is either
+        // already an exact match (opens directly, no migration machinery invoked) or has
+        // already been destroyed (creates fresh).
         let desc = NSPersistentStoreDescription(url: privateURL)
-        desc.setOption(true as NSNumber, forKey: NSMigratePersistentStoresAutomaticallyOption)
-        desc.setOption(true as NSNumber, forKey: NSInferMappingModelAutomaticallyOption)
         container.persistentStoreDescriptions = [desc]
 
         UserDefaults.standard.removeObject(forKey: "debug_coredata_error")
@@ -159,6 +177,7 @@ final class CloudSharingService: @unchecked Sendable {
         log("[handleViewContextSave] inserted=\(inserted.count) updated=\(updated.count) deleted=\(deleted.count)")
 
         let newHomeIDs = inserted.compactMap { $0.entity.name == "Home" ? $0.value(forKey: "id") as? UUID : nil }
+        let needsPersonalZone = inserted.contains { Self.personalEntityNames.contains($0.entity.name ?? "") }
 
         var byZone: [CKRecordZone.ID: (db: CKDatabase, records: [CKRecord])] = [:]
         for obj in Array(inserted) + Array(updated) {
@@ -179,6 +198,9 @@ final class CloudSharingService: @unchecked Sendable {
             // Zones must exist before records can be saved into them.
             for homeID in newHomeIDs {
                 await createZoneIfNeeded(homeID: homeID)
+            }
+            if needsPersonalZone {
+                await createPersonalZoneIfNeeded()
             }
             await withTaskGroup(of: Void.self) { group in
                 for (db, records) in byZone.values {
@@ -295,8 +317,10 @@ final class CloudSharingService: @unchecked Sendable {
                 let obj = (try? ctx.fetch(fetch).first)
                     ?? NSEntityDescription.insertNewObject(forEntityName: record.recordType, into: ctx)
 
+                let encryptedFields = Self.encryptedFieldsByEntity[record.recordType] ?? []
                 for (key, attr) in obj.entity.attributesByName {
-                    if let raw = record[key] {
+                    let raw: Any? = encryptedFields.contains(key) ? record.encryptedValues[key] : record[key]
+                    if let raw {
                         obj.setValue(Self.coreDataValue(raw, for: attr), forKey: key)
                     } else if attr.isOptional {
                         obj.setValue(nil, forKey: key)
@@ -346,6 +370,22 @@ final class CloudSharingService: @unchecked Sendable {
                 f.fetchLimit = 1
                 if let task = try? ctx.fetch(f).first { obj.setValue(task, forKey: "task") }
             }
+        case "ChatMessageData":
+            if let convIDStr = record["conversationIDString"] as? String,
+               let convID = UUID(uuidString: convIDStr) {
+                let f = NSFetchRequest<NSManagedObject>(entityName: "ChatConversation")
+                f.predicate = NSPredicate(format: "id == %@", convID as NSUUID)
+                f.fetchLimit = 1
+                if let conv = try? ctx.fetch(f).first { obj.setValue(conv, forKey: "conversation") }
+            }
+        case "ChatImageData":
+            if let msgIDStr = record["messageIDString"] as? String,
+               let msgID = UUID(uuidString: msgIDStr) {
+                let f = NSFetchRequest<NSManagedObject>(entityName: "ChatMessageData")
+                f.predicate = NSPredicate(format: "id == %@", msgID as NSUUID)
+                f.fetchLimit = 1
+                if let msg = try? ctx.fetch(f).first { obj.setValue(msg, forKey: "message") }
+            }
         default:
             break
         }
@@ -378,7 +418,11 @@ final class CloudSharingService: @unchecked Sendable {
     // MARK: - Upload helpers
 
     private func cloudKitContext(forObject obj: NSManagedObject) -> (CKRecordZone.ID, CKDatabase)? {
-        if obj.entity.name == "Home" {
+        guard let entityName = obj.entity.name else { return nil }
+        if Self.personalEntityNames.contains(entityName) {
+            return (personalZoneID, ckContainer.privateCloudDatabase)
+        }
+        if entityName == "Home" {
             guard let homeID = obj.value(forKey: "id") as? UUID else { return nil }
             return cloudKitContext(forHomeID: homeID.uuidString)
         }
@@ -386,6 +430,20 @@ final class CloudSharingService: @unchecked Sendable {
             return cloudKitContext(forHomeID: homeIDStr)
         }
         return nil
+    }
+
+    /// Fixed per-account zone for chat history + AI memory — private database only, never
+    /// shared with home co-owners regardless of which home a conversation is associated with.
+    private var personalZoneID: CKRecordZone.ID {
+        CKRecordZone.ID(zoneName: "personal", ownerName: CKCurrentUserDefaultName)
+    }
+
+    private func createPersonalZoneIfNeeded() async {
+        do {
+            _ = try await ckContainer.privateCloudDatabase.save(CKRecordZone(zoneID: personalZoneID))
+        } catch {
+            log("[CK] createPersonalZoneIfNeeded FAILED: \(error)")
+        }
     }
 
     private func cloudKitContext(forHomeID homeIDString: String) -> (CKRecordZone.ID, CKDatabase)? {
@@ -411,9 +469,14 @@ final class CloudSharingService: @unchecked Sendable {
               let entityName = obj.entity.name else { return nil }
         let record = CKRecord(recordType: entityName,
                               recordID: CKRecord.ID(recordName: id.uuidString, zoneID: zoneID))
+        let encryptedFields = Self.encryptedFieldsByEntity[entityName] ?? []
         for (key, attr) in obj.entity.attributesByName {
-            guard let raw = obj.value(forKey: key) else { continue }
-            record[key] = Self.ckValue(raw, for: attr)
+            guard let raw = obj.value(forKey: key), let value = Self.ckValue(raw, for: attr) else { continue }
+            if encryptedFields.contains(key) {
+                record.encryptedValues[key] = value
+            } else {
+                record[key] = value
+            }
         }
         return record
     }
@@ -565,6 +628,63 @@ final class CloudSharingService: @unchecked Sendable {
 
         UserDefaults.standard.set(true, forKey: "directCloudKitMigrated_v1")
         log("[CloudSharingService] Initial upload done — \(privateRecords.count) private + \(sharedRecords.count) shared")
+    }
+
+    // MARK: - Personal data migration (chat history + AI memory → CloudKit personal zone)
+
+    /// One-time migration, separate from performInitialUploadIfNeeded above: that flag was
+    /// already set for existing users before chat/memory entities existed in syncedEntityNames,
+    /// so it won't re-run to pick these up. This uploads any local chat history to the new
+    /// personal zone, and pulls the legacy Firestore aiMemory string into local UserMemory
+    /// (clearing it server-side afterward) so nothing is lost in the switch.
+    @MainActor
+    func migratePersonalDataIfNeeded() async {
+        guard !UserDefaults.standard.bool(forKey: "personalZoneMigrated_v1") else { return }
+        log("[CloudSharingService] Migrating chat history + memory to personal CloudKit zone")
+
+        let ctx = persistentContainer.viewContext
+
+        // Don't mark this migration done until we've actually had a signed-in session to check
+        // Firestore against — otherwise a launch that races ahead of sign-in permanently skips
+        // the legacy aiMemory migration, since this flag never gets a second chance to run.
+        guard let uid = Auth.auth().currentUser?.uid else {
+            log("[CloudSharingService] Not signed in yet — will retry personal data migration on next launch")
+            return
+        }
+
+        let doc = try? await Firestore.firestore().collection("users").document(uid).getDocument()
+        if let legacyMemory = doc?.data()?["aiMemory"] as? String, !legacyMemory.isEmpty {
+            let memory = UserMemory.fetchOrCreate(in: ctx)
+            if (memory.content ?? "").isEmpty {
+                memory.content = legacyMemory
+                memory.updatedAt = Date()
+                try? ctx.save()
+            }
+            _ = try? await Functions.functions().httpsCallable("clearMigratedMemory").call([:] as [String: Any])
+            log("[CloudSharingService] Migrated legacy aiMemory from Firestore, cleared remote copy")
+        }
+
+        await createPersonalZoneIfNeeded()
+
+        var records: [CKRecord] = []
+        for entityName in Self.personalEntityNames {
+            let f = NSFetchRequest<NSManagedObject>(entityName: entityName)
+            let objs = (try? ctx.fetch(f)) ?? []
+            for obj in objs {
+                guard let (zoneID, _) = cloudKitContext(forObject: obj),
+                      let record = makeCKRecord(for: obj, zoneID: zoneID) else { continue }
+                records.append(record)
+            }
+        }
+
+        let batchSize = 400
+        for start in stride(from: 0, to: records.count, by: batchSize) {
+            let end = min(start + batchSize, records.count)
+            await saveRecords(Array(records[start..<end]), to: ckContainer.privateCloudDatabase)
+        }
+
+        UserDefaults.standard.set(true, forKey: "personalZoneMigrated_v1")
+        log("[CloudSharingService] Personal data migration done — \(records.count) record(s)")
     }
 
     // MARK: - Sharing

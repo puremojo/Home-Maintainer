@@ -31,12 +31,14 @@ public final class ChatConversation: NSManagedObject, Identifiable {
         message.content = content
         message.timestamp = Date()
         message.conversation = self
+        message.conversationIDString = id.uuidString
 
         for data in imageData {
             let imageRecord = ChatImageData(context: context)
             imageRecord.id = UUID()
             imageRecord.imageData = data
             imageRecord.message = message
+            imageRecord.messageIDString = message.id.uuidString
         }
 
         lastMessageAt = Date()
@@ -66,6 +68,10 @@ public final class ChatMessageData: NSManagedObject, Identifiable {
     @NSManaged public var content: String
     @NSManaged public var timestamp: Date
     @NSManaged public var conversation: ChatConversation?
+    /// Scalar mirror of `conversation.id`, set at creation — CKRecord can't preserve
+    /// relationships directly, so cross-record links are always mirrored as ID strings
+    /// (same pattern as `homeIDString` elsewhere in the schema).
+    @NSManaged public var conversationIDString: String?
     @NSManaged public var imageRecords: NSSet?
 
     var messageRole: MessageRole {
@@ -94,6 +100,8 @@ public final class ChatImageData: NSManagedObject, Identifiable {
     @NSManaged public var id: UUID
     @NSManaged public var imageData: Data?
     @NSManaged public var message: ChatMessageData?
+    /// Scalar mirror of `message.id`, set at creation — same reason as `conversationIDString` above.
+    @NSManaged public var messageIDString: String?
 }
 
 // MARK: - MessageRole
